@@ -5,8 +5,8 @@ connection = None
 
 def get_connection():
     s = threadlocal.get_current_registry().settings
+    global connection # these connections are thread safe
     if connection is None:
-        global connection # these connections are thread safe
         connection = connect_dynamodb(
             aws_access_key_id=s['aws_access_key_id'],
             aws_secret_access_key=s['aws_secret_access_key'])
@@ -25,7 +25,7 @@ def create_table(name, schema, read_units=10, write_units=10):
                              read_units=read_units, write_units=write_units)
 
 def get_item(table_name, key):
-    return get_table().get_item(hash_key=key)
+    return get_table(table_name).get_item(hash_key=key)
 
 def create_item(table_name, hash_key, attributes, range_key=None):
     table = get_table(table_name)
@@ -62,10 +62,15 @@ class PersistedObject(object):
         return cls(r)
     
     @classmethod
-    def create(cls, k, d=None):
+    def create(cls, d=None, **other):
         table = get_table(cls.table_name)
         if d is None:
             d = {}
+        d.update(other)
+        if cls.hash_key[0] not in d:
+            raise TypeError('creation attributes must at least contain the '
+                            'chosen hash_key: ' + cls.hash_key[0])
+        d[cls.hash_key[0]] = cls.hash_key[1](d[cls.hash_key[0]]) # ensure proto
         args = {'hash_key': cls.hash_key[0], 'attrs': d}
         if cls.range_key[0]:
             args['range_key'] = cls.range_key[0]
@@ -77,8 +82,9 @@ class PersistedObject(object):
         self._exists = not is_new
     
     def __getattribute__(self, name):
-        if name in self._item:
-            return self._item[name]
+        _item = super(PersistedObject, self).__getattribute__('_item')
+        if name in _item:
+            return _item[name]
         return super(PersistedObject, self).__getattribute__(name)
     
     def __setattribute__(self, name, value):
@@ -88,15 +94,20 @@ class PersistedObject(object):
         else:
             super(PersistedObject, self).__getattribute__(name)
     
+    def to_dict(self):
+        return dict(self._item)
+    
     def save(self):
         if self._dirty:
             self._item.put()
+        return self
     
     def update(self, d, save=False):
         for k, v in d.iteritems():
             setattr(self, k, v)
         if save:
             self.save()
+        return self
     
     def delete(self):
         raise NotImplementedError
