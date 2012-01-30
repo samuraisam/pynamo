@@ -42,3 +42,62 @@ def update_item(table_name, key, attributes):
     item.put()
     return item
 
+
+class NotFoundError(Exception):
+    pass
+
+
+class PersistedObject(object):
+    table_name = None
+    hash_key = (None, None) # (keyname, proto)
+    range_key = (None, None) # (keyname, proto)
+    read_units = 10
+    write_units = 10
+        
+    @classmethod
+    def get(cls, k):
+        r = get_item(cls.table_name, cls.hash_key[1](k))
+        if not r:
+            raise NotFoundError()
+        return cls(r)
+    
+    @classmethod
+    def create(cls, k, d=None):
+        table = get_table(cls.table_name)
+        if d is None:
+            d = {}
+        args = {'hash_key': cls.hash_key[0], 'attrs': d}
+        if cls.range_key[0]:
+            args['range_key'] = cls.range_key[0]
+        return cls(table.new_item(**args), is_new=True)
+
+    def __init__(self, item, is_new=False):
+        self._dirty = is_new
+        self._item = item
+        self._exists = not is_new
+    
+    def __getattribute__(self, name):
+        if name in self._item:
+            return self._item[name]
+        return super(PersistedObject, self).__getattribute__(name)
+    
+    def __setattribute__(self, name, value):
+        if name in self._item:
+            self._item[name] = value
+            self._dirty = True
+        else:
+            super(PersistedObject, self).__getattribute__(name)
+    
+    def save(self):
+        if self._dirty:
+            self._item.put()
+    
+    def update(self, d, save=False):
+        for k, v in d.iteritems():
+            setattr(self, k, v)
+        if save:
+            self.save()
+    
+    def delete(self):
+        raise NotImplementedError
+
