@@ -1,5 +1,6 @@
 from pyramid import threadlocal
 from boto import connect_dynamodb
+from boto.dynamodb.exceptions import DynamoDBKeyNotFoundError
 
 connection = None
 
@@ -56,8 +57,11 @@ class PersistedObject(object):
         
     @classmethod
     def get(cls, k):
-        r = get_item(cls.table_name, cls.hash_key[1](k))
-        if not r:
+        try:
+            r = get_item(cls.table_name, cls.hash_key[1](k))
+            if not r:
+                raise NotFoundError()
+        except DynamoDBKeyNotFoundError:
             raise NotFoundError()
         return cls(r)
     
