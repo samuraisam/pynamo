@@ -1,6 +1,7 @@
 from pyramid import threadlocal
 from boto import connect_dynamodb
 from boto.dynamodb.exceptions import DynamoDBKeyNotFoundError
+from boto.dynamodb.schema import Schema
 
 connection = None
 
@@ -21,7 +22,6 @@ def get_table(name):
 
 def create_table(name, schema, read_units=10, write_units=10):
     conn = get_connection()
-    schema = conn.create_schema(**schema)
     return conn.create_table(name=get_table_prefix() + name, schema=schema, 
                              read_units=read_units, write_units=write_units)
 
@@ -47,18 +47,145 @@ def update_item(table_name, key, attributes):
 class NotFoundError(Exception):
     pass
 
+class MutationError(Exception):
+    pass
+
+class ValidationError(Exception):
+    pass
+
+
+class Field(object):
+    def __init__(self, **options):
+        self.options = options
+        self.name = None
+        self._cached_value = None
+    
+    def __get__(self, obj, type=None):
+        if self._cached_value is None:
+            self._cached_value = self.to_python(obj._item.get(self.name, None))
+        return self._cached_value
+
+    def __set__(self, obj, value):
+        self._cached_value = value
+        cleaner = getattr(obj, 'clean_' + self.name, lambda val: True)
+
+        # validate it
+        value, error = cleaner(value)
+        if error is not None:
+            raise ValidationError(error)
+
+        # convert it
+        value = self.from_python(value)
+
+        # see if it's actually any different and set it
+        old_value = obj._item.get(self.name, None)
+        if old_value != value:
+            obj._item[self.name] = value
+            obj._dirty = True 
+
+    def __delete__(self, obj):
+        have_value = obj._item.get(self.name, None) != None
+        if have_value:
+            del obj._item[self.name]
+            obj._dirty = True
+        self._cached_value = None
+    
+    def to_python(self, value):
+        return value
+    
+    def from_python(self, value):
+        return value
+
+
+class StringField(Field):
+    proto_val = ''
+    proto = str
+
+
+class NumberField(Field):
+    proto_val = 1
+    proto = int
+
+
+class PersistedObjectMeta(type):
+    def __init__(self, name, bases, classdict):
+        new_values = {}
+        try:
+            # hax, if building PersistedObject this will throw a NameError
+            in_base = (PersistedObject,)
+        except NameError:
+            pass
+        else:
+            found_hash_key = False
+            for k, v in classdict.iteritems():
+                if isinstance(v, Field):
+                    # set hash key
+                    if v.options.get('hash_key', False) == True:
+                        new_values['_hash_key_name'] = k
+                        new_values['_hash_key_proto'] = v.proto
+                        new_values['_hash_key_proto_val'] = v.proto_val
+                        found_hash_key = True
+                    # set range key
+                    if v.options.get('range_key', False) == True:
+                        new_values['_range_key_name'] = k
+                        new_values['_range_key_proto'] = v.proto
+                        new_values['_range_key_proto_val'] = v.proto_val
+                    v.name = k
+            if not found_hash_key:
+                raise TypeError('At least one field must be marked hash_key=True'
+                                ' for class "%s"' % (name,))
+        type.__init__(self, name, bases, classdict)
+        for k, v in new_values.iteritems():
+            setattr(self, k, v)
+
 
 class PersistedObject(object):
-    table_name = None
-    hash_key = (None, None) # (keyname, proto)
-    range_key = (None, None) # (keyname, proto)
-    read_units = 10
-    write_units = 10
-        
+    __table_name__ = None
+    __read_units__ = 10
+    __write_units__ = 10
+
+    _hash_key_name = None
+    _hash_key_proto = None
+    _hash_key_proto_val = None
+    _range_key_name = None
+    _range_key_proto = None
+    _range_key_proto_val = None
+    _schema = None
+    _table = None
+
+    __metaclass__ = PersistedObjectMeta
+
+    @classmethod
+    def _load_meta(cls):
+        connection = get_connection()
+        if cls._table is not None:
+            return
+        # get the full table name
+        cls._full_table_name = get_table_prefix() + cls.__table_name__
+        # get the table
+        cls._table = connection.get_table(cls._full_table_name)
+    
+    @classmethod
+    def _create_table(cls):
+        # create the schema
+        connection = get_connection()
+        cls._schema = connection.create_schema(
+            hash_key_name = cls._hash_key_name,
+            hash_key_proto_value = cls._hash_key_proto_val,
+            range_key_name = cls._range_key_name,
+            range_key_proto_value = cls._range_key_proto_val)
+        # get the table 
+        cls._table = connection.create_table(
+            name = cls._full_table_name,
+            schema = cls._schema,
+            read_units = cls.__read_units__,
+            write_units = cls.__write_units__)
+
     @classmethod
     def get(cls, k):
+        cls._load_meta()
         try:
-            r = get_item(cls.table_name, cls.hash_key[1](k))
+            r = cls._table.get_item(cls._hash_key_proto(k))
             if not r:
                 raise NotFoundError()
         except DynamoDBKeyNotFoundError:
@@ -67,36 +194,42 @@ class PersistedObject(object):
     
     @classmethod
     def create(cls, d=None, **other):
-        table = get_table(cls.table_name)
+        cls._load_meta()
         if d is None:
             d = {}
         d.update(other)
-        if cls.hash_key[0] not in d:
+        if cls._hash_key_name not in d:
             raise TypeError('creation attributes must at least contain the '
-                            'chosen hash_key: ' + cls.hash_key[0])
-        d[cls.hash_key[0]] = cls.hash_key[1](d[cls.hash_key[0]]) # ensure proto
-        args = {'hash_key': cls.hash_key[0], 'attrs': d}
-        if cls.range_key[0]:
-            args['range_key'] = cls.range_key[0]
-        return cls(table.new_item(**args), is_new=True)
+                            'chosen hash_key: ' + cls._hash_key_name)
+        
+        # create the underlying boto.dynamodb.item.Item
+        args = {'hash_key': cls._hash_key_name, 
+                'attrs': {cls._hash_key_name: cls._hash_key_proto(
+                                d[cls._hash_key_name])}}
+        if cls._range_key_name:
+            args['range_key'] = cls._range_key_name
+            args['attrs'][cls._range_key_name] = \
+                cls._range_key_proto(d[cls._range_key_name])
+        
+        # build the object
+        ret = cls(cls._table.new_item(**args), is_new=True)
+        ignore = (cls._hash_key_name, cls._range_key_name)
+        for k, v in d.iteritems():
+            if k in ignore:
+                continue
+            setattr(ret, k, v)
+        
+        return ret
+    
+    def __new__(cls, *args, **kwargs):
+        cls._load_meta()
+        return object.__new__(cls, *args, **kwargs)
+        # return super(PersistedObject, cls).__new__(*args, **kwargs)
 
     def __init__(self, item, is_new=False):
         self._dirty = is_new
         self._item = item
         self._exists = not is_new
-    
-    def __getattribute__(self, name):
-        _item = super(PersistedObject, self).__getattribute__('_item')
-        if name in _item:
-            return _item[name]
-        return super(PersistedObject, self).__getattribute__(name)
-    
-    def __setattribute__(self, name, value):
-        if name in self._item:
-            self._item[name] = value
-            self._dirty = True
-        else:
-            super(PersistedObject, self).__getattribute__(name)
     
     def to_dict(self):
         return dict(self._item)
