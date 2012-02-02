@@ -60,7 +60,6 @@ class Field(object):
     def __init__(self, **options):
         self.options = options
         self.name = None
-        # self._cached_value = None
     
     def __get__(self, obj, type=None):
         c = obj._property_cache
@@ -124,6 +123,8 @@ class NumberField(Field):
 
 class ObjectField(StringField):
     def to_python(self, value):
+        if value is None:
+            return value
         return json.loads(value)
     
     def from_python(self, value):
@@ -138,10 +139,12 @@ class DefaultObjectField(ObjectField):
     object_types = None
 
     def __get__(self, obj, type=None):
-        super(DefaultObjectField, self).__get__(obj, type=type)
-        if self._cached_value is None:
-            self._cached_value = self.object_proto()
-        return self._cached_value
+        r = super(DefaultObjectField, self).__get__(obj, type=type)
+        if r is not None:
+            return r
+        d = obj._property_cache
+        d[self.name] = self.object_proto()
+        return d[self.name]
     
     def validate(self, value):
         if not isinstance(value, self.object_types):
@@ -150,8 +153,24 @@ class DefaultObjectField(ObjectField):
 
 
 class SetField(DefaultObjectField):
+    """
+    A `set` field. Only works with mutable sets.
+    """
     object_proto = set
     object_types = (set,)
+
+    def to_python(self, value):
+        v = super(SetField, self).to_python(value)
+        if v is None:
+            return v
+        return set(v)
+    
+    def from_python(self, value):
+        # convert it to a list, because `set`s don't serialize to JSON
+        sup = super(SetField, self).from_python
+        if value is None:
+            return sup(value)
+        return sup(list(value))
 
 
 class ListField(DefaultObjectField):
@@ -248,7 +267,8 @@ class PersistedObject(object):
             try:
                 r = cls._table.get_item(cls._hash_key_proto(k))
             finally:
-                logger.info('Got %r in %s' % (r, time.time() - t1))
+                logger.info('Got %d %s in %s' % (0 if r is None else 1, 
+                                                 cls.__name__, time.time() - t1))
             if not r:
                 raise NotFoundError()
         except DynamoDBKeyNotFoundError:
@@ -424,7 +444,8 @@ class PersistedObject(object):
             try:
                 self._item.put()
             finally:
-                logger.info('Saved %r in %s' % (self, time.time() - t1))
+                logger.info('Saved 1 %s in %s' % (self.__class__.__name__, 
+                                                  time.time() - t1))
         return self
     
     def update(self, d, save=False):

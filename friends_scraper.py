@@ -78,9 +78,9 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
 
     def validate_login(self):
         d = {'access_token': self.credentials['access_token']}
-        print 'd', d
+        # print 'd', d
         resp = requests.get('https://graph.facebook.com/me', params=d)
-        print resp.url, 'data', resp, json.loads(resp.content)
+        # print resp.url, 'data', resp, json.loads(resp.content)
         if resp.status_code != 200:
             raise InvalidCredentialsError
 
@@ -106,9 +106,8 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
                 'service_id':   str(f['id']),
                 'data':         f
             } for f in friends])
-        # if persist:
-        #     ret = map(lambda s: s.save(), ret)
-        print 'dirty', [r._dirty for r in ret]
+        if persist:
+            ret = map(lambda s: s.save(), ret)
         if persist:
             # get the user's connections list
             conns = UserConnections.get_or_create(
