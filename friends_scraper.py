@@ -1,13 +1,17 @@
-from buddy.utils import dynamodb
+import requests, json
 
 _adaptors = {}
 
 
-class InvalidCredentials(Exception):
+class InvalidCredentialsError(Exception):
     pass
 
 
-class InvalidPermissions(Exception):
+class InvalidPermissionsError(Exception):
+    pass
+
+
+class ServiceError(Exception):
     pass
 
 
@@ -22,8 +26,8 @@ class FriendsAdaptor(object):
     name = '__none__'
 
     @classmethod
-    def by_name(cls, name):
-        return _adaptors[name]
+    def by_name(cls, name, user):
+        return _adaptors[name](user)
     
     @property
     def connections_key(self):
@@ -50,6 +54,12 @@ class FriendsAdaptor(object):
         """
         raise NotImplementedError
     
+    def get_friends(self, persist=False):
+        """
+        Returns a list of Accounts
+        """
+        raise NotImplementedError
+    
     def scrape_friends(self):
         """
         Returns a list of 
@@ -65,6 +75,47 @@ class FriendsAdaptor(object):
 
 class FacebookFriendsAdaptor(FriendsAdaptor):
     name = 'facebook'
+
+    def validate_login(self):
+        d = {'access_token': self.credentials['access_token']}
+        print 'd', d
+        resp = requests.get('https://graph.facebook.com/me', params=d)
+        print resp.url, 'data', resp, json.loads(resp.content)
+        if resp.status_code != 200:
+            raise InvalidCredentialsError
+
+    def get_friends(self, persist=False):
+        from buddy.data.account import Account, UserConnections
+        d = {'access_token': self.user.facebook_access_token}
+        resp = requests.get('https://graph.facebook.com/me/friends', params=d)
+        data = json.loads(resp.content)
+        friends = []
+        while 'data' in data and len(data['data']):
+            friends.extend(data['data'])
+            resp = requests.get(data['paging']['next'])
+            data = json.loads(resp.content)
+        else:
+            if (resp.status_code == 400 and 'error' in data and
+                    data['error']['type'] == OAuthError):
+                raise InvalidCredentialsError()
+            elif resp.status_code < 200 or resp.status_code > 399:
+                raise ServiceError()
+        ret = Account.get_or_create_many([{
+                'key':          'facebook:' + str(f['id']),
+                'service_type': 'facebook',
+                'service_id':   str(f['id']),
+                'data':         f
+            } for f in friends])
+        # if persist:
+        #     ret = map(lambda s: s.save(), ret)
+        print 'dirty', [r._dirty for r in ret]
+        if persist:
+            # get the user's connections list
+            conns = UserConnections.get_or_create(
+                user_id=self.user.user_id)
+            conns.ensure_connections(ret)
+            conns.save()
+        return ret
 
 
 class TwitterFriendsAdaptor(FriendsAdaptor):

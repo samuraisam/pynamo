@@ -1,9 +1,13 @@
+import json, logging, time
 from pyramid import threadlocal
 from boto import connect_dynamodb
 from boto.dynamodb.exceptions import DynamoDBKeyNotFoundError
 from boto.dynamodb.schema import Schema
+from boto.dynamodb.batch import BatchList
+from boto.dynamodb.item import Item
 
 connection = None
+logger = logging.getLogger(__name__)
 
 def get_connection():
     s = threadlocal.get_current_registry().settings
@@ -47,8 +51,6 @@ def update_item(table_name, key, attributes):
 class NotFoundError(Exception):
     pass
 
-class MutationError(Exception):
-    pass
 
 class ValidationError(Exception):
     pass
@@ -58,25 +60,26 @@ class Field(object):
     def __init__(self, **options):
         self.options = options
         self.name = None
-        self._cached_value = None
+        # self._cached_value = None
     
     def __get__(self, obj, type=None):
-        if self._cached_value is None:
-            self._cached_value = self.to_python(obj._item.get(self.name, None))
-        return self._cached_value
+        c = obj._property_cache
+        if self.name not in c:
+            c[self.name] = self.to_python(obj._item.get(self.name, None))
+        return c[self.name]
 
     def __set__(self, obj, value):
-        self._cached_value = value
-        cleaner = getattr(obj, 'clean_' + self.name, lambda val: True)
-
-        # validate it
+        c = obj._property_cache
+        c[self.name] = value
+        cleaner = getattr(obj, 'clean_' + self.name, lambda val: (val, None))
+        # clean it
         value, error = cleaner(value)
         if error is not None:
             raise ValidationError(error)
-
+        # validate it
+        self.validate(value)
         # convert it
         value = self.from_python(value)
-
         # see if it's actually any different and set it
         old_value = obj._item.get(self.name, None)
         if old_value != value:
@@ -88,27 +91,81 @@ class Field(object):
         if have_value:
             del obj._item[self.name]
             obj._dirty = True
-        self._cached_value = None
+        if self.name in obj._property_cache:
+            del obj._property_cache[self.name]
     
     def to_python(self, value):
         return value
     
     def from_python(self, value):
         return value
+    
+    def validate(self, value):
+        return None
 
 
 class StringField(Field):
     proto_val = ''
     proto = str
 
+    def validate(self, value):
+        if not isinstance(value, str):
+            raise ValidationError("An instance of str is required.")
+
 
 class NumberField(Field):
     proto_val = 1
     proto = int
 
+    def validate(self, value):
+        if not isinstance(value, int):
+            raise ValidationError("An instance of int is required")
+
+
+class ObjectField(StringField):
+    def to_python(self, value):
+        return json.loads(value)
+    
+    def from_python(self, value):
+        return json.dumps(value)
+    
+    def validate(self, value):
+        pass # pretty much anything JSON-able is allowed here
+
+
+class DefaultObjectField(ObjectField):
+    object_proto = None
+    object_types = None
+
+    def __get__(self, obj, type=None):
+        super(DefaultObjectField, self).__get__(obj, type=type)
+        if self._cached_value is None:
+            self._cached_value = self.object_proto()
+        return self._cached_value
+    
+    def validate(self, value):
+        if not isinstance(value, self.object_types):
+            raise ValidationError("An instance of one of %r is required" % (
+                                  self.object_types,))
+
+
+class SetField(DefaultObjectField):
+    object_proto = set
+    object_types = (set,)
+
+
+class ListField(DefaultObjectField):
+    object_proto = list
+    object_types = (list,)
+
+
+class Dictfield(DefaultObjectField):
+    object_proto = dict
+    object_types = (dict,)
+
 
 class PersistedObjectMeta(type):
-    def __init__(self, name, bases, classdict):
+    def __init__(cls, name, bases, classdict):
         new_values = {}
         try:
             # hax, if building PersistedObject this will throw a NameError
@@ -134,9 +191,9 @@ class PersistedObjectMeta(type):
             if not found_hash_key:
                 raise TypeError('At least one field must be marked hash_key=True'
                                 ' for class "%s"' % (name,))
-        type.__init__(self, name, bases, classdict)
+        type.__init__(cls, name, bases, classdict)
         for k, v in new_values.iteritems():
-            setattr(self, k, v)
+            setattr(cls, k, v)
 
 
 class PersistedObject(object):
@@ -174,6 +231,7 @@ class PersistedObject(object):
             hash_key_proto_value = cls._hash_key_proto_val,
             range_key_name = cls._range_key_name,
             range_key_proto_value = cls._range_key_proto_val)
+        
         # get the table 
         cls._table = connection.create_table(
             name = cls._full_table_name,
@@ -185,7 +243,12 @@ class PersistedObject(object):
     def get(cls, k):
         cls._load_meta()
         try:
-            r = cls._table.get_item(cls._hash_key_proto(k))
+            r = None
+            t1 = time.time()
+            try:
+                r = cls._table.get_item(cls._hash_key_proto(k))
+            finally:
+                logger.info('Got %r in %s' % (r, time.time() - t1))
             if not r:
                 raise NotFoundError()
         except DynamoDBKeyNotFoundError:
@@ -221,22 +284,147 @@ class PersistedObject(object):
         
         return ret
     
+    @classmethod
+    def get_or_create(cls, d=None, **other):
+        if d is None:
+            d = {}
+        d.update(other)
+        k = cls._hash_key_proto(d[cls._hash_key_name])
+        try:
+            ret = cls.get(k)
+        except NotFoundError:
+            ret = cls.create(d)
+        return ret
+    
+    @classmethod
+    def get_many(cls, keys):
+        """
+        Returns a list of :class:`PersistedObject` identical in length to the
+        list of keys provided. If a key could not be found, it's slot will be 
+        `None`
+
+        :type keys: list
+        :param keys: A list of keys
+        """
+        cls._load_meta()
+        t1 = time.time()
+        # get the items
+        items, unprocessed = cls._fetch_batch_queue(cls._get_batch_queue(keys))
+        # if there are unprocessed items, create a batch from them
+        if len(unprocessed):
+            unprocessed_queue = cls._get_batch_queue(unprocessed)
+        else:
+            unprocessed_queue = []
+        # and continue fetching unprocessed items until there are no more
+        while len(unprocessed_queue):
+            new_items, new_unprocessed = cls._fetch_batch_queue(unprocessed_queue)
+            items.extend(new_items)
+            if len(new_unprocessed):
+                unprocessed_queue = cls._get_batch_queue(new_unprocessed)
+            else:
+                unprocessed_queue = []
+        # create a hash out of the values' keys for quick reordering
+        h = dict((item[cls._hash_key_name], idx) for idx, item in enumerate(items))
+        ret = []
+        for key in keys:
+            if key in h:
+                ret.append(cls(Item(cls._table, key, None, items[h[key]])))
+            else:
+                ret.append(None)
+        logger.info('Got %i of %s in %s' % (len(items), cls.__name__, 
+                                            time.time() - t1))
+        return ret
+    
+    @classmethod
+    def _fetch_batch_queue(cls, batch_queue):
+        results = []
+        unprocessed = []
+        while len(batch_queue):
+            batch_keys = batch_queue.pop()
+            batch = BatchList(get_connection())
+            batch.add_batch(cls._table, [cls._hash_key_proto(k) 
+                                         for k in batch_keys])
+            try:
+                batch_ret = batch.submit()
+            except DynamoDBKeyNotFoundError:
+                continue
+            # import pprint
+            # pprint.pprint(batch_ret)
+            if ('UnprocessedKeys' in batch_ret and cls._full_table_name 
+                    in batch_ret['UnprocessedKeys']):
+                u = batch_ret['UnprocessedKeys'][cls._full_table_name]
+                u = [k['HashKeyElement'] for k in u['Keys']]
+                unprocessed.extend(u)
+            if ('Responses' in batch_ret and cls._full_table_name 
+                    in batch_ret['Responses']):
+                results.extend(
+                    batch_ret['Responses'][cls._full_table_name]['Items'])
+        return results, unprocessed
+    
+    @classmethod
+    def _get_batch_queue(cls, keys):
+        num_batches, last_batch_size = divmod(len(keys), 100)
+        batches = []
+        for i in xrange(num_batches+1):
+            batches.append(keys[i*100:(i+1)*100])
+        return batches
+    
+    @classmethod
+    def get_or_create_many(cls, dicts):
+        """
+        Does the same as get_or_create but on a collection of dictionaries
+        instead. Returns a list of :class:`PersistedObject` the same as 
+        :meth:`get_many` except that the None slots (non-existing entries) are
+        filled in.
+
+        Note that the :class:`PersistedObject`s, whether they are created or not
+        are not automatically persisted to DynamoDB. You must call :meth:`save`
+        on the instances.
+
+        :type dicts: list
+        :param dicts: A list of dictionaries same as provided to `get_or_create`
+        """
+        keys = [item[cls._hash_key_name] for item in dicts]
+        ret = cls.get_many(keys)
+        create = []
+        for i, item in enumerate(ret):
+            if item is None:
+                create.append((i, cls.create(d)))
+        for idx, item in create:
+            ret[idx] = item
+        return ret
+    
     def __new__(cls, *args, **kwargs):
         cls._load_meta()
         return object.__new__(cls, *args, **kwargs)
-        # return super(PersistedObject, cls).__new__(*args, **kwargs)
 
     def __init__(self, item, is_new=False):
         self._dirty = is_new
         self._item = item
         self._exists = not is_new
+        self._property_cache = {}
+    
+    def __unicode__(self):
+        cls = self.__class__
+        return u'<%s %s=%r>' % (cls.__name__, cls._hash_key_name, 
+                                getattr(self, cls._hash_key_name))
+    
+    def __str__(self):
+        return str(self.__unicode__())
+    
+    def __repr__(self):
+        return self.__str__()
     
     def to_dict(self):
         return dict(self._item)
     
     def save(self):
         if self._dirty:
-            self._item.put()
+            t1 = time.time()
+            try:
+                self._item.put()
+            finally:
+                logger.info('Saved %r in %s' % (self, time.time() - t1))
         return self
     
     def update(self, d, save=False):
