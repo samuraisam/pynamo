@@ -1,4 +1,4 @@
-import requests, json
+import requests, json, oauth_hook
 
 _adaptors = {}
 
@@ -77,16 +77,15 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
     name = 'facebook'
 
     def validate_login(self):
-        d = {'access_token': self.credentials['access_token']}
-        # print 'd', d
+        d = self.credentials.copy()
         resp = requests.get('https://graph.facebook.com/me', params=d)
-        # print resp.url, 'data', resp, json.loads(resp.content)
         if resp.status_code != 200:
             raise InvalidCredentialsError
+        return json.loads(resp.content)
 
     def get_friends(self, persist=False):
         from buddy.data.account import Account, UserConnections
-        d = {'access_token': self.user.facebook_access_token}
+        d = self.credentials.copy()
         resp = requests.get('https://graph.facebook.com/me/friends', params=d)
         data = json.loads(resp.content)
         friends = []
@@ -108,10 +107,8 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
             } for f in friends])
         if persist:
             ret = map(lambda s: s.save(), ret)
-        if persist:
             # get the user's connections list
-            conns = UserConnections.get_or_create(
-                user_id=self.user.user_id)
+            conns = UserConnections.get_or_create(user_id=self.user.user_id)
             conns.ensure_connections(ret)
             conns.save()
         return ret
@@ -119,4 +116,46 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
 
 class TwitterFriendsAdaptor(FriendsAdaptor):
     name = 'twitter'
+    verify_url = 'https://api.twitter.com/1/account/verify_credentials.json'
+    friends_url = 'https://api.twitter.com/1/friends/ids.json'
+
+    def _get_client(self):
+        hook = oauth_hook.OAuthHook(
+            access_token=self.credentials['access_token'],
+            access_token_secret=self.credentials['access_token_secret'],
+            consumer_key=self.credentials['consumer_key'],
+            consumer_secret=self.credentials['consumer_secret'])
+        return requests.session(hooks={'pre_request': hook})
+
+    def validate_login(self):
+        c = self._get_client()
+        resp = c.get(self.verify_url)
+        if resp.status_code != 200:
+            raise InvalidCredentialsError
+        return json.loads(resp.content)
+    
+    def get_friends(self, persist=False):
+        from buddy.data.account import Account, UserConnections
+        c = self._get_client()
+        d = {'cursor': '-1'}
+        resp = c.get(self.friends_url, params=d)
+        data = json.loads(resp.content)
+        items = data['ids']
+        while len(data['ids']):
+            d['cursor'] = str(data['next_cursor'])
+            data = json.loads(c.get(self.friends_url, params=d).content)
+            items.extend(data['ids'])
+        ret = Account.get_or_create_many([{
+                'key': 'twitter:' + str(p),
+                'service_type': 'twitter',
+                'service_id': str(p),
+        } for p in items])
+        if persist:
+            ret = map(lambda s: s.save(), ret)
+            conns = UserConnections.get_or_create(user_id=self.user.user_id)
+            conns.ensure_connections(ret)
+            conns.save()
+        return ret
+
+
 

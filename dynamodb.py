@@ -178,7 +178,7 @@ class ListField(DefaultObjectField):
     object_types = (list,)
 
 
-class Dictfield(DefaultObjectField):
+class DictField(DefaultObjectField):
     object_proto = dict
     object_types = (dict,)
 
@@ -186,6 +186,7 @@ class Dictfield(DefaultObjectField):
 class PersistedObjectMeta(type):
     def __init__(cls, name, bases, classdict):
         new_values = {}
+        _props = []
         try:
             # hax, if building PersistedObject this will throw a NameError
             in_base = (PersistedObject,)
@@ -207,10 +208,14 @@ class PersistedObjectMeta(type):
                         new_values['_range_key_proto'] = v.proto
                         new_values['_range_key_proto_val'] = v.proto_val
                     v.name = k
+                    _props.append(k)
             if not found_hash_key:
                 raise TypeError('At least one field must be marked hash_key=True'
                                 ' for class "%s"' % (name,))
+        
         type.__init__(cls, name, bases, classdict)
+
+        new_values['_properties'] = _props
         for k, v in new_values.iteritems():
             setattr(cls, k, v)
 
@@ -228,6 +233,7 @@ class PersistedObject(object):
     _range_key_proto_val = None
     _schema = None
     _table = None
+    _properties = None
 
     __metaclass__ = PersistedObjectMeta
 
@@ -409,7 +415,7 @@ class PersistedObject(object):
         create = []
         for i, item in enumerate(ret):
             if item is None:
-                create.append((i, cls.create(d)))
+                create.append((i, cls.create(dicts[i])))
         for idx, item in create:
             ret[idx] = item
         return ret
@@ -436,8 +442,13 @@ class PersistedObject(object):
         return self.__str__()
     
     def to_dict(self):
-        return dict(self._item)
+        return {n: getattr(self, n) for n in self._properties}
     
+    def verbose_string(self):
+        return '<%s %s>' % (self.__class__.__name__, 
+                            ' '.join(['='.join(list(map(str, p))) 
+                                      for p in self.to_dict().iteritems()]))
+
     def save(self):
         if self._dirty:
             t1 = time.time()
