@@ -15,3 +15,10 @@ Create a file: `~/.pynamo.cfg` which provides the following data (filled in)::
 
 I use `nose` which pretty much rocks. From the main repository directy simply 
 run `nosetests` which will pick up all the Pynamo tests and run them.
+
+Running the full test suite takes a very long time. It has to create and destroy
+many DynamoDB tables, and at the time of writing that seems to take quite a 
+while.
+
+If some tests fail, you may have to delete them from the AWS Console or another
+command line client by hand.
