@@ -241,7 +241,7 @@ class PersistentObject(object):
                                 'completed successfully.')
     
     @classmethod
-    def reset_table(cls):
+    def reset_table(cls, wait=True):
         """
         Drops the table (it must previously exist) then waits until it's totally
         gone to recreate it. Doesn't wait for recreation to complete. Sends 
@@ -261,7 +261,7 @@ class PersistentObject(object):
         else:
             raise Exception('Tried to delete the table but DynamoDB took too '
                             'long to respond.')
-        cls.create_table()
+        cls.create_table(wait=True)
     
     # ITEM MANIPULATION
 

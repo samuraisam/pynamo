@@ -1,7 +1,8 @@
 import unittest
-from boto.dynamodb.exception import DynamoDBResponseError
+from boto.exception import DynamoDBResponseError
 from boto.dynamodb.table import Table
-from pynamo import PersistentObject, Meta, Configure, StringField, IntegerField
+from pynamo import (PersistentObject, Meta, Configure, StringField, 
+                    IntegerField, NotFoundError)
 
 
 class TestPersistentObject(PersistentObject):
@@ -37,10 +38,35 @@ class PersistentObjectTableTests(unittest.TestCase):
 
         self.assertRaises(DynamoDBResponseError, conn.get_table, 
                           TestPersistentObject._full_table_name)
+    
+    def test_reset_table(self):
+        # create a table
+        TestPersistentObject.create_table(wait=True)
+        
+        # create some objects in it
+        TestPersistentObject.create(key='lol').save()
+        TestPersistentObject.create(key='wut').save()
+        
+        # make sure they're really there
+        self.assertTrue(isinstance(TestPersistentObject.get('lol'), 
+            TestPersistentObject))
+        
+        conn = Configure.get_connection()
 
+        TestPersistentObject.reset_table(wait=True)
 
-class TestMeta(unittest.TestCase):
-    pass
+        # now ensure they're really gone
+        self.assertRaises(NotFoundError, TestPersistentObject.get, 'lol')
+        self.assertRaises(NotFoundError, TestPersistentObject.get, 'wut')
+
+        # and that the table is recreated
+        self.assertTrue(isinstance(conn.get_table(
+            TestPersistentObject._full_table_name), Table))
+
+        TestPersistentObject.drop_table(wait=True)
+
+        self.assertRaises(DynamoDBResponseError, conn.get_table, 
+                          TestPersistentObject._full_table_name)
 
 
 class PersistentObjectTest(unittest.TestCase):
@@ -53,52 +79,3 @@ class PersistentObjectTest(unittest.TestCase):
     def tearDown(self):
         TestPersistentObject.drop_table(wait=True)
         TestPersistentObjectPreparedKey.drop_table(wait=True)
-
-    def test_delete(self):
-        pass
-    
-    ### ATTRIBUTE UPDATE TESTS
-
-    def test_update_object(self):
-        pass
-    
-    def test_update_single_attribute(self):
-        pass
-    
-    ### SAVE TESTS
-
-    def test_save(self):
-        pass
-    
-    def test_save_new(self):
-        pass
-    
-    def test_save_exists(self):
-        pass
-    
-    ### BATCH TESTS
-    
-    def test_get_or_create_many_some_new(self):
-        pass
-    
-    def test_get_or_create_many_all_new(self):
-        pass
-    
-    def test_get_or_create_many_none_new(self):
-        pass
-    
-    def test_get_or_create_many_prepared_key(self):
-        pass
-    
-    def test_get_many_some_exist(self):
-        pass
-    
-    def test_get_many_none_exist(self):
-        pass
-    
-    def test_get_many_all_exist(self):
-        pass
-    
-    def test_get_many_prepared_key(self):
-        pass
-    
