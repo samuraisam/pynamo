@@ -16,7 +16,7 @@ class Configure(object):
     @classmethod
     def with_ini_file(cls, ini_file_path=None):
         if ini_file_path is None:
-            ini_file_path = os.path.join(os.path.getcwd(), 'pynamo.cfg')
+            ini_file_path = os.path.join(os.getcwd(), 'pynamo.cfg')
         import ConfigParser
         p = ConfigParser.ConfigParser()
         p.read([ini_file_path, os.path.expanduser('~/.pynamo.cfg')])
@@ -31,6 +31,8 @@ class Configure(object):
             cls._connection = boto.connect_dynamodb(
                 aws_access_key_id=s['aws_access_key_id'],
                 aws_secret_access_key=s['aws_secret_access_key'])
-            )
         return cls._connection
     
+    @classmethod
+    def get_table_prefix(cls):
+        return cls.TABLE_PREFIX
