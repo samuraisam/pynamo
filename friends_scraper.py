@@ -48,27 +48,22 @@ class FriendsAdaptor(object):
         self.user = user
         self._credentials = None
     
-    def get_existing_friends(self):
-        """
-        Return a list of friend-dictionaries
-        """
-        raise NotImplementedError
-    
     def get_friends(self, persist=False):
         """
         Returns a list of Accounts
         """
         raise NotImplementedError
     
-    def scrape_friends(self):
-        """
-        Returns a list of 
-        """
-        raise NotImplementedError
-    
     def validate_login(self):
         """
         Determins is the credentials work
+        """
+        raise NotImplementedError
+    
+    def associate_account(self):
+        """
+        Creates a record associating the :class:`Account` object with the
+        contained :class:`User` object. 
         """
         raise NotImplementedError
 
@@ -112,6 +107,24 @@ class FacebookFriendsAdaptor(FriendsAdaptor):
             conns.ensure_connections(ret)
             conns.save()
         return ret
+    
+    def associate_account(self):
+        from buddy.data.account import Account, AccountConnections
+        data = self.validate_login()
+        fid = 'facebook:' + str(data['id'])
+        acct = Account.get_or_create({
+            'key': fid,
+            'service_type': 'facebook',
+            'service_id': str(data['id']),
+            'data': data
+        })
+        acct.save()
+        conn = AccountConnections.get_or_create({
+            'account_key': fid, 
+            'owner': self.user.user_id
+        })
+        conn.save()
+        return data 
 
 
 class TwitterFriendsAdaptor(FriendsAdaptor):
@@ -156,6 +169,22 @@ class TwitterFriendsAdaptor(FriendsAdaptor):
             conns.ensure_connections(ret)
             conns.save()
         return ret
-
-
+    
+    def associate_account(self):
+        from buddy.data.account import Account, AccountConnections
+        data = self.validate_login()
+        twid = 'twitter:' + str(data['id'])
+        acct = Account.get_or_create({
+            'key': twid,
+            'service_type': 'twitter',
+            'service_id': str(data['id']),
+            'data': data
+        })
+        acct.save()
+        conn = AccountConnections.get_or_create({
+            'account_key': fid,
+            'owner': self.user.user_id
+        })
+        conn.save()
+        return data
 

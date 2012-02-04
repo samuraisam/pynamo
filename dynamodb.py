@@ -2,6 +2,7 @@ import json, logging, time
 from pyramid import threadlocal
 from boto import connect_dynamodb
 from boto.dynamodb.exceptions import DynamoDBKeyNotFoundError
+from boto.exception import DynamoDBResponseError
 from boto.dynamodb.schema import Schema
 from boto.dynamodb.batch import BatchList
 from boto.dynamodb.item import Item
@@ -81,17 +82,33 @@ class Field(object):
         value = self.from_python(value)
         # see if it's actually any different and set it
         old_value = obj._item.get(self.name, None)
+        self.do_set(obj, old_value, value)
+    
+    def do_set(self, obj, old_value, value, set_dirty=True):
         if old_value != value:
+            if obj._exists:
+                if old is None:
+                    obj._item.add_attribute(self.name, value)
+                else:
+                    obj._item.put_attribute(self.name, value)
             obj._item[self.name] = value
-            obj._dirty = True 
+            obj._property_cache[self.name] = value
+            if set_dirty:
+                obj._dirty = True 
 
     def __delete__(self, obj):
         have_value = obj._item.get(self.name, None) != None
         if have_value:
-            del obj._item[self.name]
+            if obj._exists:
+                obj._item.delete_attribute(self.name)
+            else:
+                del obj._item[self.name]
             obj._dirty = True
         if self.name in obj._property_cache:
             del obj._property_cache[self.name]
+    
+    def contribute_to_class(self, klass):
+        pass
     
     def to_python(self, value):
         return value
@@ -108,7 +125,7 @@ class StringField(Field):
     proto = str
 
     def validate(self, value):
-        if not isinstance(value, str):
+        if not isinstance(value, basestring):
             raise ValidationError("An instance of str is required.")
 
 
@@ -152,12 +169,15 @@ class DefaultObjectField(ObjectField):
                                   self.object_types,))
 
 
-class SetField(DefaultObjectField):
+class SetField(Field):
     """
     A `set` field. Only works with mutable sets.
     """
     object_proto = set
     object_types = (set,)
+
+    # __get__ = DefaultObjectField.__get__
+    # validate = DefaultObjectField.validate
 
     def to_python(self, value):
         v = super(SetField, self).to_python(value)
@@ -171,6 +191,96 @@ class SetField(DefaultObjectField):
         if value is None:
             return sup(value)
         return sup(list(value))
+    
+    def __get__(self, obj, type=None):
+        r = super(SetField, self).__get__(obj, type=type)
+        if r is None:
+            r = obj._property_cache[self.name] = set()
+        return r
+    
+    def validate(self, value):
+        if not isinstance(value, set):
+            raise ValidationError("An instance of set is required.")
+    
+    def contribute_to_class(self, klass):
+        super(SetField, self).contribute_to_class(klass)
+
+        def _check(instance, save, force):
+            if force:
+                return
+            if not instance._exists:
+                raise ValueError('Can only add/remove from a set on a '
+                                 'PersistentObject if it already exists in the '
+                                 'data store. Assign a set to the attribute like '
+                                 'you would normally unless it has been created.')
+            if save is True and instance._dirty:
+                raise ValueError('Can not add/remove from a set on a '
+                                 'PersistentObject while other attributes have '
+                                 'pending changes. Changing set contents this '
+                                 'way performs a write to DynamoDB thus flushing '
+                                 'all modified attributes. Pasee force=True '
+                                 'to acknowledge that you know this operation '
+                                 'performs a write.')
+        
+        def do_update(instance, val):
+            instance._item[self.name] = val
+            instance._property_cache[self.name] = val
+        
+        def add_to_set(instance, items, save=True, force=False):
+            """
+            Adds the provided items to the SetItem attribute.
+
+            NOTE:
+                THIS PERFORMS A WRITE
+            
+            :type items: set|list
+            :param items: The items to add to this set.
+            """
+            _check(instance, save, force)
+            old_value = getattr(instance, self.name)
+            items = set(items)
+            instance._item.add_attribute(self.name, items)
+            instance._dirty = True
+            try:
+                if save:
+                    instance.save()
+            except:
+                raise
+            else:
+                old_value.update(items)
+                do_update(instance, old_value)
+            finally:
+                instance._dirty = False
+        
+        def remove_from_set(instance, items, save=True, force=False):
+            """
+            Remove the provided items from the SetItem attribute.
+
+            NOTE:
+                THIS PERFORMS A WRITE. You can only run this operation if there
+                are no pending attribute changes for this object.
+            
+            :type items: set|list
+            :param items: The items to remove from this set.
+            """
+            _check(instance, save, force)
+            old_value = getattr(instance, self.name)
+            items = set(items)
+            instance._item.delete_attribute(self.name, items)
+            instance._dirty = True
+            try:
+                if save:
+                    instance.save()
+            except:
+                raise
+            else:
+                old_value.difference_update(items)
+                do_update(instance, old_value)
+            finally:
+                instance._dirty = False
+        
+        setattr(klass, 'add_to_%s_set' % self.name, add_to_set)
+        setattr(klass, 'remove_from_%s_set' % self.name, remove_from_set)
 
 
 class ListField(DefaultObjectField):
@@ -218,12 +328,15 @@ class PersistedObjectMeta(type):
         new_values['_properties'] = _props
         for k, v in new_values.iteritems():
             setattr(cls, k, v)
+        
+        for prop in _props:
+            classdict[prop].contribute_to_class(cls)
 
 
 class PersistedObject(object):
     __table_name__ = None
-    __read_units__ = 10
-    __write_units__ = 10
+    __read_units__ = 8
+    __write_units__ = 8
 
     _hash_key_name = None
     _hash_key_proto = None
@@ -237,6 +350,8 @@ class PersistedObject(object):
 
     __metaclass__ = PersistedObjectMeta
 
+    # TABLE MANIPULATION
+
     @classmethod
     def _load_meta(cls):
         connection = get_connection()
@@ -248,7 +363,7 @@ class PersistedObject(object):
         cls._table = connection.get_table(cls._full_table_name)
     
     @classmethod
-    def _create_table(cls):
+    def create_table(cls):
         # create the schema
         connection = get_connection()
         cls._schema = connection.create_schema(
@@ -263,6 +378,30 @@ class PersistedObject(object):
             schema = cls._schema,
             read_units = cls.__read_units__,
             write_units = cls.__write_units__)
+    
+    @classmethod
+    def drop_table(cls):
+        cls._load_meta()
+        cls._table.delete()
+    
+    @classmethod
+    def reset_table(cls):
+        cls._load_meta()
+        cls.drop_table()
+        conn = get_connection()
+        for i in xrange(30): # try/wait up to 30 sec for the table to be deleted
+            try:
+                cls._table.update_from_response(conn.describe_table(cls._table.name))
+            except DynamoDBResponseError, e:
+                if e.data['__type'].endswith('ResourceNotFoundException'):
+                    break
+            sleep(1)
+        else:
+            raise Exception('Tried to delete the table but DynamoDB took too '
+                            'long to respond.')
+        cls.create_table()
+    
+    # ITEM MANIPULATION
 
     @classmethod
     def get(cls, k):
@@ -452,18 +591,22 @@ class PersistedObject(object):
     def save(self):
         if self._dirty:
             t1 = time.time()
+            ret = {'ConsumedCapacityUnits': 0}
             try:
-                self._item.put()
+                if self._exists:
+                    ret = self._item.save()
+                else:
+                    ret = self._item.put()
+                self._dirty = False
             finally:
-                logger.info('Saved 1 %s in %s' % (self.__class__.__name__, 
-                                                  time.time() - t1))
+                logger.info('Saved 1 %s in %s ConsumedCapacityUnits=%f' % (
+                                self.__class__.__name__, time.time() - t1,
+                                ret['ConsumedCapacityUnits']))
         return self
     
-    def update(self, d, save=False):
+    def update(self, d):
         for k, v in d.iteritems():
             setattr(self, k, v)
-        if save:
-            self.save()
         return self
     
     def delete(self):
