@@ -1,0 +1,36 @@
+import os
+import boto
+
+class Configure(object):
+    AWS_ACCESS_KEY_ID = None
+    AWS_SECRET_ACCESS_KEY = None
+    _connection = None
+    TABLE_PREFIX = None
+
+    @classmethod
+    def with_environment_variables(cls):
+        cls.AWS_ACCESS_KEY_ID = os.environ['AWS_ACCESS_KEY_ID']
+        cls.AWS_SECRET_ACCESS_KEY = os.environ['AWS_SECRET_ACCESS_KEY']
+        cls.TABLE_PREFIX = os.environ['DYNAMODB_TABLE_PREFIX']
+    
+    @classmethod
+    def with_ini_file(cls, ini_file_path=None):
+        if ini_file_path is None:
+            ini_file_path = os.path.join(os.path.getcwd(), 'pynamo.cfg')
+        import ConfigParser
+        p = ConfigParser.ConfigParser()
+        p.read([ini_file_path, os.path.expanduser('~/.pynamo.cfg')])
+        cls.AWS_ACCESS_KEY_ID = p.get('aws', 'access_key_id')
+        cls.AWS_SECRET_ACCESS_KEY = p.get('aws', 'secret_access_key')
+        cls.TABLE_PREFIX = p.get('dynamodb', 'table_prefix')
+        
+    
+    @classmethod
+    def get_connection(cls):
+        if cls._connection is None:
+            cls._connection = boto.connect_dynamodb(
+                aws_access_key_id=s['aws_access_key_id'],
+                aws_secret_access_key=s['aws_secret_access_key'])
+            )
+        return cls._connection
+    
