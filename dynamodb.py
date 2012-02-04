@@ -1,4 +1,4 @@
-import json, logging, time
+import json, logging, time, string
 from pyramid import threadlocal
 from boto import connect_dynamodb
 from boto.dynamodb.exceptions import DynamoDBKeyNotFoundError
@@ -57,8 +57,22 @@ class ValidationError(Exception):
     pass
 
 
+class Meta(object):
+    def __init__(self, *a, **kw):
+        if len(a) == 1:
+            self.value = a[0]
+        elif len(kw):
+            self.value = kw
+        else:
+            raise ValueError('Meta must either be a single value or keyword '
+                             'arguments')
+
+
 class Field(object):
     def __init__(self, **options):
+        if self.__class__ == Field:
+            raise TypeError('Field is a baseclass. Instantiate one of the '
+                            'Field subclasses instead.')
         self.options = options
         self.name = None
     
@@ -120,7 +134,14 @@ class Field(object):
         return None
 
 
+# NATIVE TYPES
+# These are fields that DynamoDB understands directly
+
+
 class StringField(Field):
+    """
+    A string field. For strings, like `unicode` and `str`
+    """
     proto_val = ''
     proto = str
 
@@ -129,55 +150,67 @@ class StringField(Field):
             raise ValidationError("An instance of str is required.")
 
 
-class NumberField(Field):
+class IntegerField(Field):
+    """
+    Numbers. `long`s and `int`s only please.
+    """
     proto_val = 1
     proto = int
 
     def validate(self, value):
-        if not isinstance(value, int):
+        if not isinstance(value, (int, long)):
             raise ValidationError("An instance of int is required")
 
 
-class ObjectField(StringField):
+class FloatField(self, value):
+    proto_val = 1.0
+    proto = float
+
+    def validate(self, value):
+        if not isinstance(value, float):
+            raise ValidationError("An instance of int is required")
+
     def to_python(self, value):
-        if value is None:
-            return value
-        return json.loads(value)
-    
-    def from_python(self, value):
-        return json.dumps(value)
-    
+        return float(value)
+
+
+class BoolField(Field):
+    proto_val = False
+    proto = bool
+
     def validate(self, value):
-        pass # pretty much anything JSON-able is allowed here
+        if not isinstance(value, bool):
+            raise ValidationError("An instance of int is required")
 
-
-class DefaultObjectField(ObjectField):
-    object_proto = None
-    object_types = None
-
-    def __get__(self, obj, type=None):
-        r = super(DefaultObjectField, self).__get__(obj, type=type)
-        if r is not None:
-            return r
-        d = obj._property_cache
-        d[self.name] = self.object_proto()
-        return d[self.name]
-    
-    def validate(self, value):
-        if not isinstance(value, self.object_types):
-            raise ValidationError("An instance of one of %r is required" % (
-                                  self.object_types,))
+    def to_python(self, value):
+        return bool(value)
 
 
 class SetField(Field):
     """
-    A `set` field. Only works with mutable sets.
+    A `set` field. Sets are native data types in DynamoDB as long as their
+    values contain exclusively either numbers or strings. This type
+    allows us to work with sets in python and have the functionality mirrored
+    in DynamoDB.
+
+    Adds two methods to the class:
+        `add_to_{FIELDNAME}_set` which adds objects to the set and saves. For 
+        more detailed information call `help(obj.add_to_{FIELDNAME}_set)`
+
+        `remove_from_{FIELDNAME}_set` which removes objects from the set and 
+        saves. For more detailed information call 
+        `help(obj.remove_from_{FIELDNAME}_set)`
     """
+    proto = set
+    proto_val = None
     object_proto = set
     object_types = (set,)
 
-    # __get__ = DefaultObjectField.__get__
-    # validate = DefaultObjectField.validate
+    def __init__(self, *a, **kw):
+        if self.__class__ == SetField:
+            raise TypeError('SetField is a base class. Use StringSetField or '
+                            'NumberSetField')
+        super(SetField, self).__init__(*a, **kw)
 
     def to_python(self, value):
         v = super(SetField, self).to_python(value)
@@ -283,6 +316,54 @@ class SetField(Field):
         setattr(klass, 'remove_from_%s_set' % self.name, remove_from_set)
 
 
+class NumberSetField(SetField):
+    proto_val = set([1])
+
+
+class StringSetField(SetField):
+    proto_val = set([''])
+
+    def validate(self, value):
+        super(StringSetField, self).validate(value)
+        if 
+
+
+# SYNTHESIZED TYPES
+# These types are build on top of other native DynamoDB types. Primarily they
+# are built by using JSON-serialization.
+
+
+class ObjectField(StringField):
+    def to_python(self, value):
+        if value is None:
+            return value
+        return json.loads(value)
+    
+    def from_python(self, value):
+        return json.dumps(value)
+    
+    def validate(self, value):
+        pass # pretty much anything JSON-able is allowed here
+
+
+class DefaultObjectField(ObjectField):
+    object_proto = None
+    object_types = None
+
+    def __get__(self, obj, type=None):
+        r = super(DefaultObjectField, self).__get__(obj, type=type)
+        if r is not None:
+            return r
+        d = obj._property_cache
+        d[self.name] = self.object_proto()
+        return d[self.name]
+    
+    def validate(self, value):
+        if not isinstance(value, self.object_types):
+            raise ValidationError("An instance of one of %r is required" % (
+                                  self.object_types,))
+
+
 class ListField(DefaultObjectField):
     object_proto = list
     object_types = (list,)
@@ -297,6 +378,8 @@ class PersistedObjectMeta(type):
     def __init__(cls, name, bases, classdict):
         new_values = {}
         _props = []
+        _remove_props = []
+        _meta = []
         try:
             # hax, if building PersistedObject this will throw a NameError
             in_base = (PersistedObject,)
@@ -319,6 +402,8 @@ class PersistedObjectMeta(type):
                         new_values['_range_key_proto_val'] = v.proto_val
                     v.name = k
                     _props.append(k)
+                if isinstance(v, Meta):
+                    _meta.append((k, v))
             if not found_hash_key:
                 raise TypeError('At least one field must be marked hash_key=True'
                                 ' for class "%s"' % (name,))
@@ -328,15 +413,29 @@ class PersistedObjectMeta(type):
         new_values['_properties'] = _props
         for k, v in new_values.iteritems():
             setattr(cls, k, v)
-        
+        for prop in _remove_props:
+            delattr(cls, prop)
         for prop in _props:
             classdict[prop].contribute_to_class(cls)
+        for k, v in _meta:
+            setattr(cls, '__%s__' % k, v.value)
+        # this shouldn't be here. but it's easier for now
+        fmt = getattr(cls, '__hash_key_format__', None)
+        if fmt is not None:
+            print fmt
+            attr_list = []
+            pieces = string.Formatter().parse(fmt)
+            for literal_text, field_name, format_spec, conversion in pieces:
+                attr_list.append(field_name)
+            setattr(cls, '__hash_key_attributes__', tuple(attr_list))
 
 
 class PersistedObject(object):
     __table_name__ = None
     __read_units__ = 8
     __write_units__ = 8
+    __key_format__ = None
+    __key_attributes__ = None
 
     _hash_key_name = None
     _hash_key_proto = None
@@ -366,6 +465,7 @@ class PersistedObject(object):
     def create_table(cls):
         # create the schema
         connection = get_connection()
+        cls._full_table_name = get_table_prefix() + cls.__table_name__
         cls._schema = connection.create_schema(
             hash_key_name = cls._hash_key_name,
             hash_key_proto_value = cls._hash_key_proto_val,
@@ -391,11 +491,12 @@ class PersistedObject(object):
         conn = get_connection()
         for i in xrange(30): # try/wait up to 30 sec for the table to be deleted
             try:
-                cls._table.update_from_response(conn.describe_table(cls._table.name))
+                cls._table.update_from_response(conn.describe_table(
+                        cls._table.name))
             except DynamoDBResponseError, e:
                 if e.data['__type'].endswith('ResourceNotFoundException'):
                     break
-            sleep(1)
+            time.sleep(1)
         else:
             raise Exception('Tried to delete the table but DynamoDB took too '
                             'long to respond.')
@@ -404,16 +505,44 @@ class PersistedObject(object):
     # ITEM MANIPULATION
 
     @classmethod
-    def get(cls, k):
+    def prepare_key(cls, key_or_dict):
+        # provided a dict and key_attribute and key_format are filled out
+        if (isinstance(key_or_dict, dict) and cls.__hash_key_attributes__ is 
+                not None and cls.__hash_key_format__ is not None):
+            for k in cls.__hash_key_attributes__:
+                if k not in key_or_dict:
+                    raise ValueError('Tried to build a key but not all the '
+                                     'required attributes were present: ' 
+                                    + repr(cls.__hash_key_attributes__))
+            ret = cls.__hash_key_format__.format(**key_or_dict)
+        # provided a dict, just extract the key from there
+        elif isinstance(key_or_dict, dict):
+            ret = key_or_dict[cls._hash_key_name]
+        # otherwise the key is assumed to be already valid 
+        else:
+            ret = key_or_dict
+        return cls._hash_key_proto(ret)
+
+    @classmethod
+    def get(cls, *a, **kw):
         cls._load_meta()
+        if len(a) == 1:
+            k = cls.prepare_key(a[0])
+        elif len(kw) == len(cls.__key_attributes__):
+            k = cls.prepare_key(kw)
+        else:
+            raise ValueError('Either provide a singular key or keyword '
+                             'arguments to build the key from the provided '
+                             'key_format, in which case it must include all '
+                             'the possible attributes.')
         try:
             r = None
             t1 = time.time()
             try:
-                r = cls._table.get_item(cls._hash_key_proto(k))
+                r = cls._table.get_item(k)
             finally:
                 logger.info('Got %d %s in %s' % (0 if r is None else 1, 
-                                                 cls.__name__, time.time() - t1))
+                                                cls.__name__, time.time() - t1))
             if not r:
                 raise NotFoundError()
         except DynamoDBKeyNotFoundError:
@@ -426,14 +555,19 @@ class PersistedObject(object):
         if d is None:
             d = {}
         d.update(other)
+        key = None
         if cls._hash_key_name not in d:
-            raise TypeError('creation attributes must at least contain the '
-                            'chosen hash_key: ' + cls._hash_key_name)
-        
+            # the hashkey is not present, try building it
+            try:
+                key = cls.prepare_key(d)
+            except ValueError:
+                raise ValueError('Creation attrubuts must contain at least the '
+                                 'hash key or the hash key attributes')
+        else:
+            key = d[cls._hash_key_name]
         # create the underlying boto.dynamodb.item.Item
         args = {'hash_key': cls._hash_key_name, 
-                'attrs': {cls._hash_key_name: cls._hash_key_proto(
-                                d[cls._hash_key_name])}}
+                'attrs': {cls._hash_key_name: key}}
         if cls._range_key_name:
             args['range_key'] = cls._range_key_name
             args['attrs'][cls._range_key_name] = \
@@ -454,7 +588,8 @@ class PersistedObject(object):
         if d is None:
             d = {}
         d.update(other)
-        k = cls._hash_key_proto(d[cls._hash_key_name])
+        # k = cls._hash_key_proto(d[cls._hash_key_name])
+        k = cls.prepare_key(d)
         try:
             ret = cls.get(k)
         except NotFoundError:
@@ -471,10 +606,12 @@ class PersistedObject(object):
         :type keys: list
         :param keys: A list of keys
         """
+        keys = map(cls.prepare_key, keys)
         cls._load_meta()
         t1 = time.time()
         # get the items
-        items, unprocessed = cls._fetch_batch_queue(cls._get_batch_queue(keys))
+        items, unprocessed, consumed_capacity = cls._fetch_batch_queue(
+                cls._get_batch_queue(keys))
         # if there are unprocessed items, create a batch from them
         if len(unprocessed):
             unprocessed_queue = cls._get_batch_queue(unprocessed)
@@ -482,22 +619,26 @@ class PersistedObject(object):
             unprocessed_queue = []
         # and continue fetching unprocessed items until there are no more
         while len(unprocessed_queue):
-            new_items, new_unprocessed = cls._fetch_batch_queue(unprocessed_queue)
+            new_items, new_unprocessed, new_consumed = cls._fetch_batch_queue(
+                    unprocessed_queue)
+            consumed_capacity += new_consumed
             items.extend(new_items)
             if len(new_unprocessed):
                 unprocessed_queue = cls._get_batch_queue(new_unprocessed)
             else:
                 unprocessed_queue = []
         # create a hash out of the values' keys for quick reordering
-        h = dict((item[cls._hash_key_name], idx) for idx, item in enumerate(items))
+        h = dict((item[cls._hash_key_name], idx) 
+                    for idx, item in enumerate(items))
         ret = []
         for key in keys:
             if key in h:
                 ret.append(cls(Item(cls._table, key, None, items[h[key]])))
             else:
                 ret.append(None)
-        logger.info('Got %i of %s in %s' % (len(items), cls.__name__, 
-                                            time.time() - t1))
+        logger.info('Got %i of %s in %s ConsumedCapacityUnits=%f' % (
+                        len(items), cls.__name__, time.time() - t1, 
+                        consumed_capacity))
         return ret
     
     @classmethod
@@ -513,6 +654,7 @@ class PersistedObject(object):
                 batch_ret = batch.submit()
             except DynamoDBKeyNotFoundError:
                 continue
+            consumed_capacity = 0.0
             # import pprint
             # pprint.pprint(batch_ret)
             if ('UnprocessedKeys' in batch_ret and cls._full_table_name 
@@ -522,9 +664,10 @@ class PersistedObject(object):
                 unprocessed.extend(u)
             if ('Responses' in batch_ret and cls._full_table_name 
                     in batch_ret['Responses']):
-                results.extend(
-                    batch_ret['Responses'][cls._full_table_name]['Items'])
-        return results, unprocessed
+                tbl = batch_ret['Responses'][cls._full_table_name]
+                results.extend(tbl['Items'])
+                consumed_capacity = tbl['ConsumedCapacityUnits']
+        return results, unprocessed, consumed_capacity
     
     @classmethod
     def _get_batch_queue(cls, keys):
@@ -549,8 +692,8 @@ class PersistedObject(object):
         :type dicts: list
         :param dicts: A list of dictionaries same as provided to `get_or_create`
         """
-        keys = [item[cls._hash_key_name] for item in dicts]
-        ret = cls.get_many(keys)
+        # keys = [item[cls._hash_key_name] for item in dicts]
+        ret = cls.get_many(dicts)
         create = []
         for i, item in enumerate(ret):
             if item is None:
