@@ -23,11 +23,9 @@ class Configure(object):
         cls.AWS_ACCESS_KEY_ID = p.get('aws', 'access_key_id')
         cls.AWS_SECRET_ACCESS_KEY = p.get('aws', 'secret_access_key')
         cls.TABLE_PREFIX = p.get('dynamodb', 'table_prefix')
-        print 'git', p.get('dynamodb', 'table_prefix')
     
     @classmethod
     def get_connection(cls):
-        print 'access key', cls.AWS_ACCESS_KEY_ID, 'secret key', cls.AWS_SECRET_ACCESS_KEY
         if cls._connection is None:
             cls._connection = boto.connect_dynamodb(
                 aws_access_key_id=cls.AWS_ACCESS_KEY_ID,
