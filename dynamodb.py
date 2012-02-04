@@ -50,14 +50,46 @@ def update_item(table_name, key, attributes):
 
 
 class NotFoundError(Exception):
+    """
+    Thrown during :meth:`get` when the requested object could not be found.
+    """
     pass
 
 
 class ValidationError(Exception):
+    """
+    Thrown by :class:`Field` subclasses when setting attributes that are 
+    invalid.
+    """
     pass
 
 
 class Meta(object):
+    """
+    A piece of metadata attached to :class:`PersistentObject` subclasses. All
+    it really does is define an attribute in the same name with two underscores
+    at the beginning and end of the attribute.
+
+    e.g.::
+        class User(PersistentObject):
+            table_name = Meta('test_users')
+    
+    becomes::
+        class User(PersistentObject):
+            __table_name__ = 'test_users'
+    
+    However it does provide some convenience to the metaclass which reads
+    metadata for the individual classes.
+
+    Currently supported property names are:
+
+      * `table_name` - which table will be used to back this 
+        :class:`PersistentObject`
+      * `read_units` - how many read units does this table have provisioned
+      * `write_units` - how many write units are provisioned for this table
+      * `key_format` - if a compound key is used, what is it's format? The 
+        attribute names are parsed from the format.
+    """
     def __init__(self, *a, **kw):
         if len(a) == 1:
             self.value = a[0]
@@ -242,18 +274,19 @@ class SetField(Field):
             if force:
                 return
             if not instance._exists:
-                raise ValueError('Can only add/remove from a set on a '
-                                 'PersistentObject if it already exists in the '
-                                 'data store. Assign a set to the attribute like '
-                                 'you would normally unless it has been created.')
+                raise ValueError(
+                    'Can only add/remove from a set on a PersistentObject if '
+                    'already exists in the data store. Assign a set to the '
+                    'attribute like you would normally unless it has been '
+                    'created.')
             if save is True and instance._dirty:
-                raise ValueError('Can not add/remove from a set on a '
-                                 'PersistentObject while other attributes have '
-                                 'pending changes. Changing set contents this '
-                                 'way performs a write to DynamoDB thus flushing '
-                                 'all modified attributes. Pasee force=True '
-                                 'to acknowledge that you know this operation '
-                                 'performs a write.')
+                raise ValueError(
+                    'Can not add/remove from a set on a PersistentObject while '
+                    'other attributes have pending changes. Changing set '
+                    'contents this way performs a write to DynamoDB thus '
+                    'flushing all modified attributes. Pasee force=True to '
+                    'acknowledge that you know this operation performs a '
+                    'write.')
         
         def do_update(instance, val):
             instance._item[self.name] = val
@@ -317,15 +350,34 @@ class SetField(Field):
 
 
 class NumberSetField(SetField):
+    """
+    A :class:`SetField` which contains only numbers: one of `(bool, int, float, 
+    long)` Upon setting or modifying this attribute this class will validate 
+    that it's contents contain only those types.
+    """
     proto_val = set([1])
 
+    def validate(self, value):
+        super(NumberSetField, self).validate()
+        valid_values = map(lambda v: isinstance(v, (long, int, bool, float)), 
+                           value)
+        if False in valid_values:
+            raise ValidationError("Invalid value inside NumberSetField - all "
+                                  "values must be numbers (int, bool, float)")
 
 class StringSetField(SetField):
+    """
+    A :class:`SetField` which contains only strings (anything descending from
+    `basestring`). Upon setting or modifying this attribute this class will 
+    validate that it's contents contain only strings.
+    """
     proto_val = set([''])
 
     def validate(self, value):
         super(StringSetField, self).validate(value)
-        if 
+        if False in map(lambda v: isinstance(v, basestring), value):
+            raise ValidationError("Invalid value inside StringSetField - all "
+                                  "values must be strings")
 
 
 # SYNTHESIZED TYPES
@@ -334,6 +386,12 @@ class StringSetField(SetField):
 
 
 class ObjectField(StringField):
+    """
+    A :class:`Field` which will serialize it's contents to and from JSON. This
+    allows for [somewhat] arbitrary objects to be saved in an attribute. JSON
+    is chosen because it's a safe serialization format and does not pose any
+    security risk to Python.
+    """
     def to_python(self, value):
         if value is None:
             return value
@@ -347,6 +405,10 @@ class ObjectField(StringField):
 
 
 class DefaultObjectField(ObjectField):
+    """
+    A container-like superclass for storing objects of a certain type. Don't
+    use this class directly, use either :class:`ListField` or :class:`DictField`
+    """
     object_proto = None
     object_types = None
 
@@ -365,11 +427,19 @@ class DefaultObjectField(ObjectField):
 
 
 class ListField(DefaultObjectField):
+    """
+    A :class:`Field` which defaults to an empty `list`. All contents must be
+    serializable in JSON.
+    """
     object_proto = list
     object_types = (list,)
 
 
 class DictField(DefaultObjectField):
+    """
+    A :class:`Field` which defaults to an empty `dict`. All contents must be
+    serializable in JSON.
+    """
     object_proto = dict
     object_types = (dict,)
 
@@ -405,7 +475,7 @@ class PersistedObjectMeta(type):
                 if isinstance(v, Meta):
                     _meta.append((k, v))
             if not found_hash_key:
-                raise TypeError('At least one field must be marked hash_key=True'
+                raise TypeError('At least one field must be marked a hash_key'
                                 ' for class "%s"' % (name,))
         
         type.__init__(cls, name, bases, classdict)
@@ -463,6 +533,16 @@ class PersistedObject(object):
     
     @classmethod
     def create_table(cls):
+        """
+        Create this table in DynamoDB by reading the declaritive configuration
+        of this class. The class must have at least one attribute that is 
+        configured as `hash_key` and must at least have a single :class:`Meta`
+        configured as `table_name`.
+
+        Sends a `CreateTable` operation to DynamoDB and does not wait for it to
+        complete fully. The table will be in the `CREATING` state for a 
+        (usually) short period afterwards. 
+        """
         # create the schema
         connection = get_connection()
         cls._full_table_name = get_table_prefix() + cls.__table_name__
@@ -481,11 +561,21 @@ class PersistedObject(object):
     
     @classmethod
     def drop_table(cls):
+        """
+        Removes the table and does not wait for DynamoDB to compeltely remove
+        it. The table will be in the `DELETING` state for some time afterwards.
+        Sends a `DeleteTable` to DynamoDB.
+        """
         cls._load_meta()
         cls._table.delete()
     
     @classmethod
     def reset_table(cls):
+        """
+        Drops the table (it must previously exist) then waits until it's totally
+        gone to recreate it. Doesn't wait for recreation to complete. Sends 
+        `DeleteTable` followed by `CreateTable` to DynamoDB.
+        """
         cls._load_meta()
         cls.drop_table()
         conn = get_connection()
@@ -506,6 +596,14 @@ class PersistedObject(object):
 
     @classmethod
     def prepare_key(cls, key_or_dict):
+        """
+        Creates a key out of a dictionary. Used internally when using compound
+        keys.
+
+        :type key_or_dict: str|dict
+        :param key_or_dict: Either an already-configured key, or a dictionary
+            from which the key will be computed
+        """
         # provided a dict and key_attribute and key_format are filled out
         if (isinstance(key_or_dict, dict) and cls.__hash_key_attributes__ is 
                 not None and cls.__hash_key_format__ is not None):
@@ -525,6 +623,15 @@ class PersistedObject(object):
 
     @classmethod
     def get(cls, *a, **kw):
+        """
+        Retrieve an item from DynamoDB. This operation performs a singular 
+        `GetItem` operation, costing you a single capacity unit. Raises 
+        `class`:NotFoundError if the item could not be found.
+
+        This method can be called multiple ways. If the full key is known, 
+        then simply pass it to :meth:`get`. If using compound keys, keyword
+        arguments may be used which will then be used to build the key.
+        """
         cls._load_meta()
         if len(a) == 1:
             k = cls.prepare_key(a[0])
@@ -551,6 +658,18 @@ class PersistedObject(object):
     
     @classmethod
     def create(cls, d=None, **other):
+        """
+        Creates a new instance of this :class:`PersistentObject` subclass
+        populated from keyword arguments or a provided dictionary. If you are
+        using compound hash keys, all dependent keys must be present, otherwise
+        all that needs to be in provided is the configured hash key.
+
+        NOTE that the returned object is not persisted to the database. You must
+        call :meth:`save` on it.
+
+        :type d: dict
+        :param d: The attributes from which to build this object.
+        """
         cls._load_meta()
         if d is None:
             d = {}
@@ -585,6 +704,17 @@ class PersistedObject(object):
     
     @classmethod
     def get_or_create(cls, d=None, **other):
+        """
+        Retrieves an item fron DynamoDB based on the hash key or compount hash
+        key in the provided dictionary. Keyword arguments also work.
+
+        NOTE that the returned object is not persisted to the database if it
+        previously did not exist. You must call :meth:`save` on it. Remember
+        that this is a no-op if the object previously did not exist.
+
+        :type d: dict
+        :param d: A dictionary from which to query or create the object.
+        """
         if d is None:
             d = {}
         d.update(other)
@@ -602,6 +732,12 @@ class PersistedObject(object):
         Returns a list of :class:`PersistedObject` identical in length to the
         list of keys provided. If a key could not be found, it's slot will be 
         `None`
+
+        This operation performs `BatchGetItem` on the DynamoDB store. This
+        method is typically limited to 100 items. Depending on your configured
+        capacity, this can easily outstrip it. This method will retry in a loop
+        until all the keys you asked for are satisfied. `keys` is not limited
+        to 100 items.
 
         :type keys: list
         :param keys: A list of keys
@@ -687,7 +823,9 @@ class PersistedObject(object):
 
         Note that the :class:`PersistedObject`s, whether they are created or not
         are not automatically persisted to DynamoDB. You must call :meth:`save`
-        on the instances.
+        on the instances. Remember that :meth:`save` only performs a save if
+        the object has been modified, so it's a no-op on freshly retrieved 
+        instances.
 
         :type dicts: list
         :param dicts: A list of dictionaries same as provided to `get_or_create`
@@ -727,16 +865,34 @@ class PersistedObject(object):
         return {n: getattr(self, n) for n in self._properties}
     
     def verbose_string(self):
+        """
+        Return a string that includes all the fields stringified.
+        """
         return '<%s %s>' % (self.__class__.__name__, 
                             ' '.join(['='.join(list(map(str, p))) 
                                       for p in self.to_dict().iteritems()]))
 
-    def save(self):
+    def save(self, force_put=False):
+        """
+        Performs a save operation if any properties have been changed. 
+        Underneath it actually performs one of two potential DynamoDB 
+        operations: `UpdateItem` if the item already exists in the store,
+        `PutItem` otherwise. 
+
+        `UpdateItem` saves only the fields that have been changed. This is
+        potentially a faster operation, minimizing network traffic.
+
+        `PutItem` sends the entire item, replacing all fields no matter what.
+
+        :type force_put: bool
+        :param force_put: Forces the entire item to be sent to DynamoDB using
+            `PutItem`
+        """
         if self._dirty:
             t1 = time.time()
             ret = {'ConsumedCapacityUnits': 0}
             try:
-                if self._exists:
+                if self._exists and not force_put:
                     ret = self._item.save()
                 else:
                     ret = self._item.put()
@@ -748,10 +904,19 @@ class PersistedObject(object):
         return self
     
     def update(self, d):
+        """
+        Convenience method for updating multiple attributes at once.
+
+        :type d: dict
+        :param d: The dictionary from which to update attributes.
+        """
         for k, v in d.iteritems():
             setattr(self, k, v)
         return self
     
     def delete(self):
+        """
+        Removes this item from DynamoDB.
+        """
         raise NotImplementedError
 
