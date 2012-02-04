@@ -182,7 +182,7 @@ class PersistentObject(object):
         cls._table = connection.get_table(cls._full_table_name)
     
     @classmethod
-    def create_table(cls):
+    def create_table(cls, wait=True):
         """
         Create this table in DynamoDB by reading the declaritive configuration
         of this class. The class must have at least one attribute that is 
@@ -195,7 +195,7 @@ class PersistentObject(object):
         """
         # create the schema
         connection = Configure.get_connection()
-        cls._full_table_name = get_table_prefix() + cls.__table_name__
+        cls._full_table_name = Configure.get_table_prefix() + cls.__table_name__
         cls._schema = connection.create_schema(
             hash_key_name = cls._hash_key_name,
             hash_key_proto_value = cls._hash_key_proto_val,
@@ -208,9 +208,16 @@ class PersistentObject(object):
             schema = cls._schema,
             read_units = cls.__read_units__,
             write_units = cls.__write_units__)
+        
+        if wait:
+            resp = connection.describe_table(cls._full_table_name)
+            while resp['Table']['TableStatus'] == 'CREATING':
+                time.sleep(1)
+                resp = connection.describe_table(cls._full_table_name)
+            cls._table.update_from_response(resp)
     
     @classmethod
-    def drop_table(cls):
+    def drop_table(cls, wait=True):
         """
         Removes the table and does not wait for DynamoDB to compeltely remove
         it. The table will be in the `DELETING` state for some time afterwards.
@@ -218,6 +225,20 @@ class PersistentObject(object):
         """
         cls._load_meta()
         cls._table.delete()
+        conn = Configure.get_connection()
+
+        if wait:
+            for i in xrange(30):
+                try:
+                    cls._table.update_from_response(conn.describe_table(
+                        cls._table.name))
+                except DynamoDBResponseError, e:
+                    if e.data['__type'].endswith('ResourceNotFoundException'):
+                        return
+                time.sleep(1)
+            else:
+                raise Exception('Could not verify that drop table was '
+                                'completed successfully.')
     
     @classmethod
     def reset_table(cls):

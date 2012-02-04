@@ -1,4 +1,6 @@
 import unittest
+from boto.dynamodb.exception import DynamoDBResponseError
+from boto.dynamodb.table import Table
 from pynamo import PersistentObject, Meta, Configure, StringField, IntegerField
 
 
@@ -17,18 +19,24 @@ class TestPersistentObjectPreparedKey(PersistentObject):
     key_3 = StringField()
 
 
+# these tests take unbearibly long to run
+# dynamodb takes forever to create/destroy tables
 class PersistentObjectTableTests(unittest.TestCase):
-    def test_create_wait(self): # waits for creation
-        pass
+    def setUp(self):
+        Configure.with_ini_file()
     
-    def test_drop(self):
-        pass
-    
-    def test_reset(self):
-        pass
-    
-    def test_reset_wait(self): # waits for creation
-        pass
+    def test_create_wait_drop(self): # waits for creation
+        TestPersistentObject.create_table(wait=True)
+        
+        conn = Configure.get_connection()
+
+        self.assertTrue(isinstance(conn.get_table(
+            TestPersistentObject._full_table_name), Table))
+
+        TestPersistentObject.drop_table(wait=True)
+
+        self.assertRaises(DynamoDBResponseError, conn.get_table, 
+                          TestPersistentObject._full_table_name)
 
 
 class TestMeta(unittest.TestCase):
@@ -43,8 +51,8 @@ class PersistentObjectTest(unittest.TestCase):
         TestPersistentObjectPreparedKey.create_table(wait=True)
     
     def tearDown(self):
-        TestPersistentObject.drop_table()
-        TestPersistentObjectPreparedKey.drop_table()
+        TestPersistentObject.drop_table(wait=True)
+        TestPersistentObjectPreparedKey.drop_table(wait=True)
 
     def test_delete(self):
         pass
