@@ -15,7 +15,7 @@ automatically uses a connection pool and supports keep-alive and timeouts.
 
 Additionally, Pynamo comes with some features of it's own:
   
-  * *declaritive schema* Pynamo's schema goes beyond defining just a hash key
+  * **declaritive schema** - Pynamo's schema goes beyond defining just a hash key
     and range key. 
   * *compound keys* keys that are composed of multiple keys.
   * *synthesized types* attributes that can be container types like `list`
