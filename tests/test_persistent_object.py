@@ -14,17 +14,69 @@ class TestPersistentObjectPreparedKey(PersistentObject):
     table_name = Meta('test_table_2')
     hash_key_format = Meta('{key_1}:{key_2}')
 
+    key = StringField(hash_key=True)
     key_1 = StringField()
     key_2 = IntegerField()
     key_string = StringField()
     key_dict_field = DictField()
     key_list_field = ListField()
     key_string_set = StringSetField()
-    key_number_set = NumberSetfield()
+    key_number_set = NumberSetField()
     key_bool_field = BoolField()
     key_float_field = FloatField()
     key_integer_field = IntegerField()
 
+
+class PersistentObjectClassTests(unittest.TestCase):
+    def test_no_hash_key(self):
+        er = 'At least one field must be marked a hash_key \(even if ' \
+             'hash_key_format is defined\) for \(class A\)'
+        with self.assertRaisesRegexp(TypeError, er):
+            class A(PersistentObject):
+                table_name = Meta('t1')
+        
+    def test_too_many_hash_keys(self):
+        er = 'Only one Field is allowed to be marked hash_key per class. ' \
+             '\(class A\)'
+        with self.assertRaisesRegexp(TypeError, er):
+            class A(PersistentObject):
+                table_name = Meta('t1')
+                hk1 = StringField(hash_key=True)
+                hk2 = StringField(hash_key=True)
+    
+    def test_too_many_range_keys(self):
+        er = 'Only one Field is allowed to be marked range_key per class ' \
+             '\(class B\)'
+        with self.assertRaisesRegexp(TypeError, er):
+            class B(PersistentObject):
+                table_name = Meta('t1')
+                rk1 = IntegerField(range_key=True)
+                rk2 = IntegerField(range_key=True)
+
+    def test_fmt_wrong_key_type(self):
+        er = 'If defining a hash_key_format, the field marked as hash_key ' \
+             'must be a StringField. \(class B\)'
+        with self.assertRaisesRegexp(TypeError, er):
+            class B(PersistentObject):
+                table_name = Meta('t1')
+                hash_key_format = Meta('{key1}:{key2}')
+                key = IntegerField(hash_key=True)
+    
+    def test_fmt_missing_piece(self):
+        er = 'hash_key_format definition requires key2 but it is not an ' \
+             'attribute on the class. \(C\)'
+        with self.assertRaisesRegexp(TypeError, er):
+            class C(PersistentObject):
+                table_name = Meta('t1')
+                hash_key_format = Meta('{key1}:{key2}')
+                key = StringField(hash_key=True)
+                key1 = StringField()
+    
+    def test_no_table_name(self):
+        er = 'Must define a table_name for class C'
+        with self.assertRaisesRegexp(TypeError, er):
+            class C(PersistentObject):
+                key = StringField(hash_key=True)
 
 
 # these tests take unbearibly long to run
@@ -76,14 +128,16 @@ class PersistentObjectTableTests(unittest.TestCase):
                           TestPersistentObject._full_table_name)
 
 
-class PersistentObjectTest(unittest.TestCase):
-    def setUp(self):
+class PersistentObjectTests(unittest.TestCase):
+    @staticmethod
+    def setUpClass():
         # create a singular table
         Configure.with_ini_file()
         TestPersistentObject.create_table(wait=True)
         TestPersistentObjectPreparedKey.create_table(wait=True)
     
-    def tearDown(self):
+    @staticmethod
+    def tearDownClass():
         TestPersistentObject.drop_table(wait=True)
         TestPersistentObjectPreparedKey.drop_table(wait=True)
     
@@ -94,9 +148,9 @@ class PersistentObjectTest(unittest.TestCase):
         self.assertEquals(TestPersistentObjectPreparedKey.prepare_key(
             dict(key_1='hello', key_2=1, key_3='wut')), 'hello:1')
         # and test that it throws the proper error when they aren't there
-        self.assertRaises(ValueError, 
-            TestPersistentObjectPreparedKey.prepare_key, 
-            dict(key_1='hello', key_string='wut'))
+        with self.assertRaises(ValueError): 
+            TestPersistentObjectPreparedKey.prepare_key( 
+                dict(key_1='hello', key_string='wut'))
     
     def test_creation(self):
         le_id1 = uuid.uuid1().hex
@@ -117,4 +171,7 @@ class PersistentObjectTest(unittest.TestCase):
         self.assertEquals(r2.key_2, res2.key_2)
         self.assertEquals(r2.key_str, res2.key_str)
 
-    
+    def test_get_or_create(self):
+        le_id1 = uuid.uuid1().hex
+        # non-existant
+

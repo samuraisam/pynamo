@@ -7,7 +7,7 @@ from boto.dynamodb.batch import BatchList
 from boto.dynamodb.item import Item
 from .exceptions import NotFoundError
 from .configuration import Configure
-from .fields import Field
+from .fields import Field, StringField
 
 # connection = None
 logger = logging.getLogger(__name__)
@@ -102,31 +102,48 @@ class PersistentObjectMeta(type):
         except NameError:
             pass
         else:
-            found_hash_key = False
+            found_hash_key = found_range_key = found_table_name = None
+            found_hash_key_format = False
             for k, v in classdict.iteritems():
                 if isinstance(v, Field):
                     # set hash key
                     if v.options.get('hash_key', False) == True:
+                        if found_hash_key:
+                            raise TypeError('Only one Field is allowed to be '
+                                            'marked hash_key per class. '
+                                            '(class %s)' % (name,))
                         new_values['_hash_key_name'] = k
                         new_values['_hash_key_proto'] = v.proto
                         new_values['_hash_key_proto_val'] = v.proto_val
-                        found_hash_key = True
+                        found_hash_key = v
                     # set range key
                     if v.options.get('range_key', False) == True:
+                        if found_range_key:
+                            raise TypeError('Only one Field is allowed to be '
+                                            'marked range_key per class '
+                                            '(class %s)' % (name,))
                         new_values['_range_key_name'] = k
                         new_values['_range_key_proto'] = v.proto
                         new_values['_range_key_proto_val'] = v.proto_val
+                        found_range_key = v
                     v.name = k
                     _props.append(k)
                 if isinstance(v, Meta):
                     _meta.append((k, v))
                     if k == 'hash_key_format':
-                        found_hash_key = True
+                        found_hash_key_format = True
+                    if k == 'table_name':
+                        found_table_name = True
             if not found_hash_key:
                 raise TypeError('At least one field must be marked a hash_key '
-                                'or a hash_key_format must be defined for '
-                                'class "%s"' % (name,))
-        
+                                '(even if hash_key_format is defined) for '
+                                '(class %s)' % (name,))
+            if found_hash_key_format and type(found_hash_key) != StringField:
+                raise TypeError('If defining a hash_key_format, the field '
+                                'marked as hash_key must be a StringField. '
+                                '(class %s)' % (name,))
+            if not found_table_name:
+                raise TypeError('Must define a table_name for class ' + name)  
         type.__init__(cls, name, bases, classdict)
 
         new_values['_properties'] = _props
@@ -141,11 +158,14 @@ class PersistentObjectMeta(type):
         # this shouldn't be here. but it's easier for now
         fmt = getattr(cls, '__hash_key_format__', None)
         if fmt is not None:
-            print fmt
             attr_list = []
             pieces = string.Formatter().parse(fmt)
             for literal_text, field_name, format_spec, conversion in pieces:
                 attr_list.append(field_name)
+                if field_name not in classdict:
+                    raise TypeError('hash_key_format definition requires %s but'
+                                    ' it is not an attribute on the class. (%s)' 
+                                    % (field_name, name,))
             setattr(cls, '__hash_key_attributes__', tuple(attr_list))
 
 
