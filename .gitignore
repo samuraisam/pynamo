@@ -8,3 +8,4 @@ build/**
 *.pyc
 *.egg-info
 docs/build/**
+.coverage
