@@ -1,8 +1,7 @@
-import unittest
+import unittest, random
 from boto.exception import DynamoDBResponseError
 from boto.dynamodb.table import Table
-from pynamo import (PersistentObject, Meta, Configure, StringField, 
-                    IntegerField, NotFoundError)
+from pynamo import *
 
 
 class TestPersistentObject(PersistentObject):
@@ -17,7 +16,15 @@ class TestPersistentObjectPreparedKey(PersistentObject):
 
     key_1 = StringField()
     key_2 = IntegerField()
-    key_3 = StringField()
+    key_string = StringField()
+    key_dict_field = DictField()
+    key_list_field = ListField()
+    key_string_set = StringSetField()
+    key_number_set = NumberSetfield()
+    key_bool_field = BoolField()
+    key_float_field = FloatField()
+    key_integer_field = IntegerField()
+
 
 
 # these tests take unbearibly long to run
@@ -79,3 +86,35 @@ class PersistentObjectTest(unittest.TestCase):
     def tearDown(self):
         TestPersistentObject.drop_table(wait=True)
         TestPersistentObjectPreparedKey.drop_table(wait=True)
+    
+    def test_prepare_key(self):
+        # first test that prepare_key does not do anything if it's not set up
+        self.assertEquals(TestPersistentObject.prepare_key('lol'), 'lol')
+        # then test that prepare_key works with all the attribtues
+        self.assertEquals(TestPersistentObjectPreparedKey.prepare_key(
+            dict(key_1='hello', key_2=1, key_3='wut')), 'hello:1')
+        # and test that it throws the proper error when they aren't there
+        self.assertRaises(ValueError, 
+            TestPersistentObjectPreparedKey.prepare_key, 
+            dict(key_1='hello', key_string='wut'))
+    
+    def test_creation(self):
+        le_id1 = uuid.uuid1().hex
+        r1 = PersistentObject.create(key=le_id1).save()
+        self.assertEquals(TestPersistentObject.get(le_id1).key, le_id1)
+    
+        d2 = { # this is only a subset of the keys
+            'key_1': uuid.uuid1().hex,
+            'key_2': random.randint(50000, 500000000),
+            'key_str': uuid.uuid1(),
+        }
+        r2 = TestPersistentObjectPreparedKey.create(d2).save()
+        self.assertEquals(d2['key_1'], r2.key_1)
+        self.assertEquals(d2['key_2'], r2.key_2)
+        self.assertEquals(d2['key_str'], r2.key_str)
+        res2 = TestPersistentObjectPreparedKey.get(d2)
+        self.assertEquals(r2.key_1, res2.key_1)
+        self.assertEquals(r2.key_2, res2.key_2)
+        self.assertEquals(r2.key_str, res2.key_str)
+
+    
