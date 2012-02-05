@@ -1,4 +1,4 @@
-import unittest, random
+import unittest, random, uuid
 from boto.exception import DynamoDBResponseError
 from boto.dynamodb.table import Table
 from pynamo import *
