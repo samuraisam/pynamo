@@ -96,6 +96,7 @@ class PersistentObjectMeta(type):
         _props = []
         _remove_props = []
         _meta = []
+        _property_instances = {}
         try:
             # hax, if building PersistentObject this will throw a NameError
             in_base = (PersistentObject,)
@@ -128,6 +129,7 @@ class PersistentObjectMeta(type):
                         found_range_key = v
                     v.name = k
                     _props.append(k)
+                    _property_instances[k] = v
                 if isinstance(v, Meta):
                     _meta.append((k, v))
                     if k == 'hash_key_format':
@@ -147,6 +149,7 @@ class PersistentObjectMeta(type):
         type.__init__(cls, name, bases, classdict)
 
         new_values['_properties'] = _props
+        new_values['_property_instances'] = _property_instances
         for k, v in new_values.iteritems():
             setattr(cls, k, v)
         for prop in _remove_props:
@@ -186,6 +189,7 @@ class PersistentObject(object):
     _schema = None
     _table = None
     _properties = None
+    _property_instances = None
 
     __metaclass__ = PersistentObjectMeta
 
@@ -193,6 +197,9 @@ class PersistentObject(object):
 
     @classmethod
     def _load_meta(cls):
+        if cls == PersistentObject:
+            raise TypeError('Can not perform that operation on the base class. '
+                            'Please subclass PersistentObject to do that.')
         connection = Configure.get_connection()
         if cls._table is not None:
             return
@@ -295,8 +302,12 @@ class PersistentObject(object):
         :param key_or_dict: Either an already-configured key, or a dictionary
             from which the key will be computed
         """
+        # provided dict and _hash_key_name is already there
+        if (isinstance(key_or_dict, dict) and cls._hash_key_name 
+                in key_or_dict):
+            ret = key_or_dict[cls._hash_key_name]
         # provided a dict and key_attribute and key_format are filled out
-        if (isinstance(key_or_dict, dict) and cls.__hash_key_attributes__ is 
+        elif (isinstance(key_or_dict, dict) and cls.__hash_key_attributes__ is 
                 not None and cls.__hash_key_format__ is not None):
             for k in cls.__hash_key_attributes__:
                 if k not in key_or_dict:
@@ -304,12 +315,11 @@ class PersistentObject(object):
                                      'required attributes were present: ' 
                                     + repr(cls.__hash_key_attributes__))
             ret = cls.__hash_key_format__.format(**key_or_dict)
-        # provided a dict, just extract the key from there
-        elif isinstance(key_or_dict, dict):
-            ret = key_or_dict[cls._hash_key_name]
         # otherwise the key is assumed to be already valid 
         else:
             ret = key_or_dict
+        # validate it
+        cls._property_instances[cls._hash_key_name].validate(ret)
         return cls._hash_key_proto(ret)
 
     @classmethod
@@ -325,8 +335,9 @@ class PersistentObject(object):
         """
         cls._load_meta()
         if len(a) == 1:
+            # a single key or a single dictionary
             k = cls.prepare_key(a[0])
-        elif len(kw) == len(cls.__key_attributes__):
+        elif len(kw) >= len(cls.__hash_key_attributes__):
             k = cls.prepare_key(kw)
         else:
             raise ValueError('Either provide a singular key or keyword '
@@ -433,8 +444,8 @@ class PersistentObject(object):
         :type keys: list
         :param keys: A list of keys
         """
-        keys = map(cls.prepare_key, keys)
         cls._load_meta()
+        keys = map(cls.prepare_key, keys)
         t1 = time.time()
         # get the items
         items, unprocessed, consumed_capacity = cls._fetch_batch_queue(

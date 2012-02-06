@@ -1,5 +1,5 @@
 import json
-
+from .exceptions import ValidationError
 
 class Field(object):
     """

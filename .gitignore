@@ -9,3 +9,4 @@ build/**
 *.egg-info
 docs/build/**
 .coverage
+coverage_html

@@ -18,13 +18,13 @@ class TestPersistentObjectPreparedKey(PersistentObject):
     key_1 = StringField()
     key_2 = IntegerField()
     key_string = StringField()
-    key_dict_field = DictField()
-    key_list_field = ListField()
+    key_dict = DictField()
+    key_list = ListField()
     key_string_set = StringSetField()
     key_number_set = NumberSetField()
-    key_bool_field = BoolField()
-    key_float_field = FloatField()
-    key_integer_field = IntegerField()
+    key_bool = BoolField()
+    key_float = FloatField()
+    key_integer = IntegerField()
 
 
 class PersistentObjectClassTests(unittest.TestCase):
@@ -77,6 +77,16 @@ class PersistentObjectClassTests(unittest.TestCase):
         with self.assertRaisesRegexp(TypeError, er):
             class C(PersistentObject):
                 key = StringField(hash_key=True)
+    
+    def test_ops_on_base_class(self):
+        class C(PersistentObject):
+            table_name = Meta('t1')
+            key = StringField(hash_key=True)
+        er = 'Can not perform that operation on the base class. ' \
+             'Please subclass PersistentObject to do that.'
+        with self.assertRaisesRegexp(TypeError, er):
+            C.create({'key': 'lol'})
+
 
 
 # these tests take unbearibly long to run
@@ -131,13 +141,14 @@ class PersistentObjectTableTests(unittest.TestCase):
 class PersistentObjectTests(unittest.TestCase):
     @staticmethod
     def setUpClass():
-        # create a singular table
         Configure.with_ini_file()
+        return
         TestPersistentObject.create_table(wait=True)
         TestPersistentObjectPreparedKey.create_table(wait=True)
     
     @staticmethod
     def tearDownClass():
+        return
         TestPersistentObject.drop_table(wait=True)
         TestPersistentObjectPreparedKey.drop_table(wait=True)
     
@@ -151,27 +162,70 @@ class PersistentObjectTests(unittest.TestCase):
         with self.assertRaises(ValueError): 
             TestPersistentObjectPreparedKey.prepare_key( 
                 dict(key_1='hello', key_string='wut'))
+        # and test that it works if you just provide the key
+        self.assertEquals(TestPersistentObjectPreparedKey.prepare_key(
+            {'key': 'key111'}), 'key111')
+        # test that it throws a ValidationError if it's the wrong key type
+        with self.assertRaises(ValidationError):
+            TestPersistentObject.prepare_key({'key': 1})
     
     def test_creation(self):
         le_id1 = uuid.uuid1().hex
-        r1 = PersistentObject.create(key=le_id1).save()
+        r1 = TestPersistentObject.create(key=le_id1).save()
         self.assertEquals(TestPersistentObject.get(le_id1).key, le_id1)
     
         d2 = { # this is only a subset of the keys
             'key_1': uuid.uuid1().hex,
             'key_2': random.randint(50000, 500000000),
-            'key_str': uuid.uuid1(),
+            'key_string': uuid.uuid1().hex,
         }
         r2 = TestPersistentObjectPreparedKey.create(d2).save()
         self.assertEquals(d2['key_1'], r2.key_1)
         self.assertEquals(d2['key_2'], r2.key_2)
-        self.assertEquals(d2['key_str'], r2.key_str)
+        self.assertEquals(d2['key_string'], r2.key_string)
         res2 = TestPersistentObjectPreparedKey.get(d2)
         self.assertEquals(r2.key_1, res2.key_1)
         self.assertEquals(r2.key_2, res2.key_2)
-        self.assertEquals(r2.key_str, res2.key_str)
+        self.assertEquals(r2.key_string, res2.key_string)
+        # throws the corect error when not creating it with the right args
+        with self.assertRaises(ValueError):
+            TestPersistentObjectPreparedKey.create(key_1='lolomg', 
+                                                   key_string='hay so')
 
-    def test_get_or_create(self):
+    def test_get(self):
         le_id1 = uuid.uuid1().hex
-        # non-existant
+        def d():
+            return dict(key_1=uuid.uuid1().hex, 
+                        key_2=random.randint(500000,500000000))
+        # works normally, with keyword arguments
+        d1 = d()
+        r1 = TestPersistentObjectPreparedKey.create(**d1).save()
+        self.assertEquals(r1.key_1, d1['key_1'])
+        # throws the proper error if not ixists
+        with self.assertRaises(NotFoundError):
+            TestPersistentObject.get(uuid.uuid1().hex)
+    
+    def test_get_or_create(self):
+        def d():
+            return dict(key_1=uuid.uuid1().hex, 
+                        key_2=random.randint(500000,500000000),
+                        key_list=[1,2,3])
+        # normal
+        d1 = d()
+        c1 = TestPersistentObjectPreparedKey.get_or_create(d1).save()
+        self.assertEquals(c1.key_list, [1,2,3])
+        r1 = TestPersistentObjectPreparedKey.get(d1)
+        self.assertEquals(r1.key_list, [1,2,3])
+        # keywords
+        d2 = d()
+        c2 = TestPersistentObjectPreparedKey.get_or_create(**d2).save()
+        self.assertEquals(c2.key_1, d2['key_1'])
+        r2 = TestPersistentObjectPreparedKey.get(d2)
+        self.assertEquals(r2.key_list, [1,2,3])
+        # existing
+        r3 = TestPersistentObjectPreparedKey.get_or_create(**d2).save()
+        self.assertEquals(c3.key_list, [1,2,3])
+
+
+        
 
