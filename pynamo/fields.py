@@ -20,6 +20,8 @@ class Field(object):
         return c[self.name]
 
     def __set__(self, obj, value):
+        if value is None:
+            return self.__delete__(obj)
         c = obj._property_cache
         c[self.name] = value
         cleaner = getattr(obj, 'clean_' + self.name, lambda val: (val, None))
@@ -38,7 +40,7 @@ class Field(object):
     def do_set(self, obj, old_value, value, set_dirty=True):
         if old_value != value:
             if obj._exists:
-                if old is None:
+                if old_value is None:
                     obj._item.add_attribute(self.name, value)
                 else:
                     obj._item.put_attribute(self.name, value)
@@ -52,8 +54,7 @@ class Field(object):
         if have_value:
             if obj._exists:
                 obj._item.delete_attribute(self.name)
-            else:
-                del obj._item[self.name]
+            del obj._item[self.name]
             obj._dirty = True
         if self.name in obj._property_cache:
             del obj._property_cache[self.name]
@@ -68,7 +69,7 @@ class Field(object):
         return value
     
     def validate(self, value):
-        return None
+        pass
 
 
 # NATIVE TYPES
@@ -83,7 +84,7 @@ class StringField(Field):
     proto = str
 
     def validate(self, value):
-        if not isinstance(value, basestring):
+        if value is not None and not isinstance(value, basestring):
             raise ValidationError("An instance of str is required.")
 
 
@@ -95,8 +96,8 @@ class IntegerField(Field):
     proto = int
 
     def validate(self, value):
-        if not isinstance(value, (int, long)):
-            raise ValidationError("An instance of int is required")
+        if value is not None and not isinstance(value, (int, long)):
+            raise ValidationError("An instance of int or long is required")
 
 
 class FloatField(Field):
@@ -104,10 +105,12 @@ class FloatField(Field):
     proto = float
 
     def validate(self, value):
-        if not isinstance(value, float):
-            raise ValidationError("An instance of int is required")
+        if value is not None and not isinstance(value, float):
+            raise ValidationError("An instance of float is required")
 
     def to_python(self, value):
+        if value is None:
+            return value
         return float(value)
 
 
@@ -116,11 +119,13 @@ class BoolField(Field):
     proto = bool
 
     def validate(self, value):
-        if not isinstance(value, bool):
-            raise ValidationError("An instance of int is required")
+        if value is not None and not isinstance(value, bool):
+            raise ValidationError("An instance of bool is required")
 
     def to_python(self, value):
-        return bool(value)
+        if value is None:
+            return value
+        return bool(int(value))
 
 
 class SetField(Field):
@@ -151,6 +156,7 @@ class SetField(Field):
 
     def to_python(self, value):
         v = super(SetField, self).to_python(value)
+        print 'to_python', self, value
         if v is None:
             return v
         return set(v)
@@ -263,6 +269,8 @@ class NumberSetField(SetField):
     proto_val = set([1])
 
     def validate(self, value):
+        if value is None:
+            return
         super(NumberSetField, self).validate()
         valid_values = map(lambda v: isinstance(v, (long, int, bool, float)), 
                            value)
@@ -279,6 +287,8 @@ class StringSetField(SetField):
     proto_val = set([''])
 
     def validate(self, value):
+        if value is None:
+            return
         super(StringSetField, self).validate(value)
         if False in map(lambda v: isinstance(v, basestring), value):
             raise ValidationError("Invalid value inside StringSetField - all "
@@ -326,7 +336,7 @@ class DefaultObjectField(ObjectField):
         return d[self.name]
     
     def validate(self, value):
-        if not isinstance(value, self.object_types):
+        if value is not None and not isinstance(value, self.object_types):
             raise ValidationError("An instance of one of %r is required" % (
                                   self.object_types,))
 
