@@ -25,6 +25,13 @@ class Configure(object):
         cls.TABLE_PREFIX = p.get('dynamodb', 'table_prefix')
     
     @classmethod
+    def with_pyramid_config(cls, config):
+        p = config.registry.settings
+        cls.AWS_ACCESS_KEY_ID = p.get('aws_access_key_id')
+        cls.AWS_SECRET_ACCESS_KEY = p.get('aws_secret_access_key')
+        cls.TABLE_PREFIX = p.get('dynamo_table_prefix', '')
+    
+    @classmethod
     def get_connection(cls):
         if cls._connection is None:
             cls._connection = boto.connect_dynamodb(
