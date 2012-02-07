@@ -4,10 +4,10 @@ Features Supported
 DynamoDB supported features:
 
   * **Batched Operations** - the current DynamoDB API only supports batched
-    fetch operations. Pynamo mixes that with `get_or_create_many` to create
-    a batched operation facade.
+    fetch operations. Additionally DynamoDB makes it painful to fetch more than
+    a few items at a time. Pynamo provides a useful batched operation facade.
   * **Set Operations** - DynamoDB has native support for sets of strings or
-    numbers.
+    numbers, which Pynamo supports with a much simplified API.
   * **UpdateItem** - Pynamo automatically uses `UpdateItem` when it makes sense.
 
 Pynamo builds on the great `boto` package, whose underlying connection api
@@ -18,8 +18,10 @@ Additionally, Pynamo comes with some features of it's own:
   * **Declaritive Schema** - Pynamo's schema goes beyond defining just a hash 
     key and range key. 
   * **Compound Keys** - keys that are composed of multiple keys.
-  * **Synthesized Types** - attributes that can be container types like `list`
+  * **Synthesized Types** - attributes can be container types like `list`
     or `dict`
+  * **Validated Attributes** - attributes are validated against the type chosen
+    when writing persisted classes
 
 
 Running the tests
