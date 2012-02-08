@@ -429,7 +429,7 @@ class PersistentObject(object):
         return ret
     
     @classmethod
-    def get_many(cls, keys):
+    def get_many(cls, keys, attributes_to_get=None):
         """
         Returns a list of :class:`PersistentObject` identical in length to the
         list of keys provided. If a key could not be found, it's slot will be 
@@ -480,19 +480,22 @@ class PersistentObject(object):
         return ret
     
     @classmethod
-    def _fetch_batch_queue(cls, batch_queue):
+    def _fetch_batch_queue(cls, batch_queue, attributes_to_get=None):
         results = []
         unprocessed = []
+        consumed_capacity = 0.0
         while len(batch_queue):
             batch_keys = batch_queue.pop()
+            if not len(batch_keys):
+                continue
             batch = BatchList(Configure.get_connection())
             batch.add_batch(cls._table, [cls._hash_key_proto(k) 
-                                         for k in batch_keys])
+                                         for k in batch_keys],
+                            attributes_to_get=attributes_to_get)
             try:
                 batch_ret = batch.submit()
             except DynamoDBKeyNotFoundError:
                 continue
-            consumed_capacity = 0.0
             # import pprint
             # pprint.pprint(batch_ret)
             if ('UnprocessedKeys' in batch_ret and cls._full_table_name 
@@ -504,7 +507,7 @@ class PersistentObject(object):
                     in batch_ret['Responses']):
                 tbl = batch_ret['Responses'][cls._full_table_name]
                 results.extend(tbl['Items'])
-                consumed_capacity = tbl['ConsumedCapacityUnits']
+                consumed_capacity += tbl['ConsumedCapacityUnits']
         return results, unprocessed, consumed_capacity
     
     @classmethod
