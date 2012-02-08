@@ -16,12 +16,16 @@ automatically uses a connection pool and supports keep-alive and timeouts.
 Additionally, Pynamo comes with some features of it's own:
   
   * **Declaritive Schema** - Pynamo's schema goes beyond defining just a hash 
-    key and range key. 
+    key and range key. Create a safe and consistent way of representing your
+    data in DynamoDB
   * **Compound Keys** - keys that are composed of multiple keys.
   * **Synthesized Types** - attributes can be container types like `list`
     or `dict`
   * **Validated Attributes** - attributes are validated against the type chosen
     when writing persisted classes
+  * **No Overhead** The objects are backed by the same dictionaries that Boto
+    uses so there is virtually no overhead to using Pynamo unlike with an 
+    most ORMs.
 
 
 Running the tests
