@@ -156,7 +156,6 @@ class SetField(Field):
 
     def to_python(self, value):
         v = super(SetField, self).to_python(value)
-        print 'to_python', self, value
         if v is None:
             return v
         return set(v)
@@ -203,58 +202,92 @@ class SetField(Field):
             instance._item[self.name] = val
             instance._property_cache[self.name] = val
         
-        def add_to_set(instance, items, save=True, force=False):
+        def add_to_set(instance, items):
             """
             Adds the provided items to the SetItem attribute.
 
             NOTE:
-                THIS PERFORMS A WRITE
+                You can only add to this set if you are ONLY adding to the set.
+                Otherwise just set it as an attribute like normal.
             
             :type items: set|list
             :param items: The items to add to this set.
             """
-            _check(instance, save, force)
-            old_value = getattr(instance, self.name)
             items = set(items)
-            instance._item.add_attribute(self.name, items)
-            instance._dirty = True
-            try:
-                if save:
-                    instance.save()
-            except:
-                raise
-            else:
-                old_value.update(items)
-                do_update(instance, old_value)
-            finally:
-                instance._dirty = False
+            old_value = getattr(instance, self.name)
+            if old_value is None:
+                old_value = set()
+            # get the existing pending updates and ensure they are in the items
+            existing_pending = instance._item._updates.get(
+                    self.name, (None, None))
+            if existing_pending[0] not in (None, 'ADD'):
+                raise ValueError('There are already pending updates for this '
+                                 'attribute=%s that are not adding (%s). You '
+                                 'can only perform either add or delete once '
+                                 'per update.' 
+                                 % (self.name, existing_pending[0]))
+            if isinstance(existing_pending[1], set):
+                items |= existing_pending[1]
+            elif existing_pending[1] is not None:
+                # it was set to something invalid entirely so this operation
+                # will totally stomp on it
+                raise ValueError('Trying to update an attribute (%s) that was '
+                                 'not previously updated as a set.' 
+                                 % (self.name,))
+            new_value = old_value | items
+            self.validate(new_value)
+            if new_value != old_value:
+                if instance._exists:
+                    instance._item.add_attribute(self.name, items)
+                else:
+                    instance._item.put_attribute(self.name, new_value)
+                instance._dirty = True
+                instance._item[self.name] = new_value
+                instance._property_cache[self.name] = new_value
         
-        def remove_from_set(instance, items, save=True, force=False):
+        def remove_from_set(instance, items):
             """
             Remove the provided items from the SetItem attribute.
 
             NOTE:
-                THIS PERFORMS A WRITE. You can only run this operation if there
-                are no pending attribute changes for this object.
+                You can only delete from this set if you are ONLY deleting from
+                the set. Otherwise just set it like a normal attribute.
             
             :type items: set|list
             :param items: The items to remove from this set.
             """
-            _check(instance, save, force)
-            old_value = getattr(instance, self.name)
             items = set(items)
-            instance._item.delete_attribute(self.name, items)
-            instance._dirty = True
-            try:
-                if save:
-                    instance.save()
-            except:
-                raise
-            else:
-                old_value.difference_update(items)
-                do_update(instance, old_value)
-            finally:
-                instance._dirty = False
+            old_value = getattr(instance, self.name)
+            if old_value is None:
+                old_value = set()
+            existing_pending = instance._item._updates.get(
+                    self.name, (None, None))
+            if existing_pending[0] not in (None, 'DELETE'):
+                raise ValueError('There are already pending updates for this '
+                                 'attribute=%s that are not adding (%s). You '
+                                 'can only perform either add or delete once '
+                                 'per update.' 
+                                 % (self.name, existing_pending[0]))
+            if isinstance(existing_pending[1], set):
+                items |= existing_pending[1]
+            elif existing_pending[1] is not None:
+                # it was set to something invalid entirely so this operation
+                # will totally stomp on it, try to avoid doing that
+                raise ValueError('Trying to update an attribute (%s) that was '
+                                 'not previously updated as a set.' 
+                                 % (self.name,))
+            # get the existing pending updates and ensure they are in the items
+            existing_pending = instance._item._updates.get(self.name, )
+            new_value = old_value - items
+            self.validate(new_value)
+            if new_value != old_value:
+                if instance._exists:
+                    instance._item.delete_attribute(self.name, items)
+                else:
+                    instance._item.put_attribute(new_value)
+                instance._dirty = True
+                instance._item[self.name] = new_value
+                instance._property_cache[self.name] = new_value
         
         setattr(klass, 'add_to_%s_set' % self.name, add_to_set)
         setattr(klass, 'remove_from_%s_set' % self.name, remove_from_set)
@@ -271,12 +304,13 @@ class NumberSetField(SetField):
     def validate(self, value):
         if value is None:
             return
-        super(NumberSetField, self).validate()
+        super(NumberSetField, self).validate(value)
         valid_values = map(lambda v: isinstance(v, (long, int, bool, float)), 
                            value)
         if False in valid_values:
             raise ValidationError("Invalid value inside NumberSetField - all "
-                                  "values must be numbers (int, bool, float)")
+                                  "values must be numbers (int, long, bool, "
+                                  "float) got: " + repr(map(type, value)))
 
 class StringSetField(SetField):
     """
