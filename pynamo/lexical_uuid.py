@@ -1,4 +1,4 @@
-import socket, os, struct, datetime, time, threading, array
+import socket, os, struct, datetime, time, threading, string
 
 __doc__ = """
 An adaptation of https://github.com/jamesgolick/lexical_uuid for pythons.
@@ -6,6 +6,13 @@ Borrowing code from https://github.com/jakedouglas/fnv-ruby
 And http://hg.python.org/cpython/file/90eda29a8e03/Lib/uuid.py
 Generates lexicographically sortable unique IDs.
 """
+
+
+ALPHABET = string.ascii_uppercase + string.ascii_lowercase + \
+           string.digits + '-_'
+ALPHABET_REVERSE = dict((c, i) for (i, c) in enumerate(ALPHABET))
+BASE = len(ALPHABET)
+SIGN_CHARACTER = '$'
 
 def new_timestamp():
     return long(time.time()*1000000)
@@ -57,7 +64,7 @@ class LexicalUUID(object):
                 self.from_bytes(timestamp)
             elif len(timestamp) == 36:
                 elements = timestamp.split('-')
-                self.from_bytes(struct.pack('H32', ''.join(elements)))
+                self.from_bytes(struct.pack('I32', ''.join(elements)))
             else:
                 raise ValueError(
                         '{timestamp} was incorrectly sized.'.format(locals()))
@@ -66,6 +73,31 @@ class LexicalUUID(object):
         elif timestamp is None:
             self.timestamp = self.timestamp_factory()
         self.int = int(('%02x'*16) % self.byte_tuple, 16)
+    
+    def from_bytes(self, bytes):
+        th, tl, wh, wl = struct.unpack('!IIII', bytes)
+        self.timestamp = (th << 32) | tl
+        self.worker_id = (wh << 32) | wl
+
+    def encode(self):
+        n = self.int
+        s = []
+        while True:
+            n, r = divmod(n, BASE)
+            s.append(ALPHABET[r])
+            if n == 0:
+                break
+        return ''.join(reversed(s))
+
+    @classmethod
+    def decode(cls, s):
+        n = 0
+        for c in s:
+            n = n * BASE + ALPHABET_REVERSE[c]
+        s = ''
+        for sh in range(0, 128, 8):
+            s = chr((n >> sh) & 0xff) + s
+        return cls(s[::-1])
 
     @property
     def guid(self):
@@ -104,11 +136,6 @@ class LexicalUUID(object):
             else self.timestamp > other.timestamp
         )
     
-    def from_bytes(self, bytes):
-        th, tl, wh, wl = struct.unpack('!IIII', bytes)
-        self.timestamp = (th << 32) | tl
-        self.worker_id = (wh << 32) | wl
-    
     def __hash__(self):
-        return hash(self.bytes())
+        return hash(self.int)
 
