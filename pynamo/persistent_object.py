@@ -50,6 +50,8 @@ class Meta(object):
 
 
 class PersistentObjectMeta(type):
+    """
+    """
     def __init__(cls, name, bases, classdict):
         new_values = {}
         _props = []
@@ -132,6 +134,8 @@ class PersistentObjectMeta(type):
 
 
 class PersistentObject(object):
+    """
+    """
     __table_name__ = None
     __read_units__ = 8
     __write_units__ = 8
@@ -338,16 +342,25 @@ class PersistentObject(object):
         key = None
         if cls._hash_key_name not in d:
             # the hashkey is not present, try building it
-            try:
-                key = cls.prepare_key(d)
-            except ValueError:
-                raise ValueError('Creation attrubuts must contain at least the '
-                                 'hash key or the hash key attributes')
+            attr_typ = getattr(cls, cls._hash_key_name)
+            if attr_typ.options.get('auto', False):
+                key = getattr(cls, cls._hash_key_name).new()
+            else:
+                try:
+                    key = cls.prepare_key(d)
+                except ValueError:
+                    raise ValueError('Creation attrubuts must contain at least '
+                                     'the hash key or the hash key attributes')
         else:
             key = d[cls._hash_key_name]
         # create the underlying boto.dynamodb.item.Item
-        args = {'hash_key': cls._hash_key_name, 
-                'attrs': {cls._hash_key_name: key}}
+        _hk_typ = getattr(cls, cls._hash_key_name)
+        args = {
+            'hash_key': cls._hash_key_name, 
+            'attrs': {
+                cls._hash_key_name: _hk_typ.from_python(key)
+            }
+        }
         if cls._range_key_name:
             args['range_key'] = cls._range_key_name
             args['attrs'][cls._range_key_name] = \
