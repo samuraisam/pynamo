@@ -2,5 +2,5 @@ from .configuration import Configure
 from .persistent_object import PersistentObject, Meta
 from .fields import (Field, StringField, IntegerField, FloatField, BoolField, 
                      SetField, NumberSetField, StringSetField, ObjectField,
-                     DefaultObjectField, ListField, DictField)
+                     DefaultObjectField, ListField, DictField, LexicalUUIDField)
 from .exceptions import NotFoundError, ValidationError

@@ -1,5 +1,7 @@
 import json
 from .exceptions import ValidationError
+from .lexical_uuid import LexicalUUID
+
 
 class Field(object):
     """
@@ -14,6 +16,8 @@ class Field(object):
         self.name = None
     
     def __get__(self, obj, type=None):
+        if obj is None:
+            return self
         c = obj._property_cache
         if self.name not in c:
             c[self.name] = self.to_python(obj._item.get(self.name, None))
@@ -31,23 +35,24 @@ class Field(object):
             raise ValidationError(error)
         # validate it
         self.validate(value)
-        # convert it
-        value = self.from_python(value)
-        # see if it's actually any different and set it
         old_value = obj._item.get(self.name, None)
-        self.do_set(obj, old_value, value)
+        if value != old_value:
+            # convert it
+            value = self.from_python(value)
+            print 'from_python', self.name, ':', value
+            # see if it's actually any different and set it
+            self.do_set(obj, old_value, value)
     
     def do_set(self, obj, old_value, value, set_dirty=True):
-        if old_value != value:
-            if obj._exists:
-                if old_value is None:
-                    obj._item.add_attribute(self.name, value)
-                else:
-                    obj._item.put_attribute(self.name, value)
-            obj._item[self.name] = value
-            obj._property_cache[self.name] = value
-            if set_dirty:
-                obj._dirty = True 
+        if obj._exists:
+            if old_value is None:
+                obj._item.add_attribute(self.name, value)
+            else:
+                obj._item.put_attribute(self.name, value)
+        obj._item[self.name] = value
+        obj._property_cache[self.name] = value
+        if set_dirty:
+            obj._dirty = True 
 
     def __delete__(self, obj):
         have_value = obj._item.get(self.name, None) != None
@@ -98,6 +103,35 @@ class IntegerField(Field):
     def validate(self, value):
         if value is not None and not isinstance(value, (int, long)):
             raise ValidationError("An instance of int or long is required")
+
+
+class LexicalUUIDField(IntegerField):
+    """
+    A field that can be used as a `hash_key`. It will automatically generate
+    a new LexicalUUID for new items.
+    """
+    
+    @classmethod
+    def new(cls):
+        return LexicalUUID()
+    
+    # def __get__(self, obj, type=None):
+    #     s = super(AutoLexicalUUIDField, self).__get__(obj, type=type)
+    #     auto = self.options.get('auto', False)
+    #     if s is None and auto and not obj._exists:
+    #         s  = LexicalUUID()
+    #         setattr(obj, self.name, s)
+    #     return s
+    
+    def to_python(self, value):
+        return LexicalUUID(value)
+    
+    def from_python(self, value):
+        return value.int
+    
+    def validate(self, value):
+        if value is not None and not isinstance(value, LexicalUUID):
+            raise ValidationError('An instance of LexicalUUID is required.')
 
 
 class FloatField(Field):
