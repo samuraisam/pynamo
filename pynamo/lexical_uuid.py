@@ -52,26 +52,34 @@ class IncreasingMicrosecondClock(object):
 class LexicalUUID(object):
     worker_id = fnv1a_64("{}-{}".format(socket.getfqdn(), os.getpid()))
     
-    def __init__(self, timestamp=None, worker_id=None, 
+    def __init__(self, value=None, worker_id=None, 
                  timestamp_factory=IncreasingMicrosecondClock):
         self.timestamp_factory = timestamp_factory()
-        if isinstance(timestamp, (int, long)):
-            self.timestamp = timestamp
-            if worker_id:
-                self.worker_id = worker_id
-        elif isinstance(timestamp, basestring):
-            if len(timestamp) == 16:
-                self.from_bytes(timestamp)
-            elif len(timestamp) == 36:
-                elements = timestamp.split('-')
+
+        if isinstance(value, self.__class__):
+            self.timestamp = value.timestamp
+            self.worker_id = value.worker_id
+        elif isinstance(value, (int, long)):
+            bytes = ''
+            for sh in range(0, 128, 8):
+                bytes = chr((value >> sh) & 0xff) + bytes
+            self.from_bytes(bytes)
+        elif isinstance(value, basestring):
+            if len(value) == 16:
+                self.from_bytes(value)
+            elif len(value) == 36:
+                elements = value.split('-')
                 self.from_bytes(struct.pack('I32', ''.join(elements)))
             else:
-                raise ValueError(
-                        '{timestamp} was incorrectly sized.'.format(locals()))
-        elif isinstance(timestamp, datetime.datetime):
-            self.timestamp = long(time.mktime(timestamp.timetuple())*1000000)
-        elif timestamp is None:
+                raise ValueError('{} was incorrectly sized.'.format(value))
+        elif isinstance(value, datetime.datetime):
+            self.timestamp = long(time.mktime(value.timetuple())*1000000)
+        elif value is None:
             self.timestamp = self.timestamp_factory()
+        else:
+            raise ValueError("Can not convert {} into a "
+                             "LexicalUUID".format(value))
+        
         self.int = int(('%02x'*16) % self.byte_tuple, 16)
     
     def from_bytes(self, bytes):
@@ -94,10 +102,7 @@ class LexicalUUID(object):
         n = 0
         for c in s:
             n = n * BASE + ALPHABET_REVERSE[c]
-        s = ''
-        for sh in range(0, 128, 8):
-            s = chr((n >> sh) & 0xff) + s
-        return cls(s[::-1])
+        return cls(n)
 
     @property
     def guid(self):
@@ -120,12 +125,14 @@ class LexicalUUID(object):
 
     def __str__(self):
         return '<%s %s>' % (self.__class__.__name__, self.guid)
-
+    
+    def __repr__(self):
+        return self.__str__()
     
     def __eq__(self, other):
         return (
             isinstance(other, LexicalUUID) and
-            self.timestam == other.timestamp and
+            self.timestamp == other.timestamp and
             self.worker_id == other.worker_id
         )
     
