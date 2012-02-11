@@ -51,11 +51,9 @@ class IncreasingMicrosecondClock(object):
 
 class LexicalUUID(object):
     worker_id = fnv1a_64("{}-{}".format(socket.getfqdn(), os.getpid()))
+    timestamp_factory = IncreasingMicrosecondClock()
     
-    def __init__(self, value=None, worker_id=None, 
-                 timestamp_factory=IncreasingMicrosecondClock):
-        self.timestamp_factory = timestamp_factory()
-
+    def __init__(self, value=None, worker_id=None):
         if isinstance(value, self.__class__):
             self.timestamp = value.timestamp
             self.worker_id = value.worker_id
