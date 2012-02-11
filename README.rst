@@ -50,5 +50,5 @@ Running the full test suite takes a very long time. It has to create and destroy
 many DynamoDB tables, and at the time of writing that seems to take quite a 
 while.
 
-If some tests fail, you may have to delete them from the AWS Console or another
-command line client by hand.
+If some tests fail, you may have to delete the tables from the AWS Console or 
+another command line client by hand.
