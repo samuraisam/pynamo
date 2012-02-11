@@ -75,6 +75,9 @@ class Field(object):
     
     def validate(self, value):
         pass
+    
+    def render(self, value):
+        return value
 
 
 # NATIVE TYPES
@@ -132,6 +135,11 @@ class LexicalUUIDField(IntegerField):
     def validate(self, value):
         if value is not None and not isinstance(value, LexicalUUID):
             raise ValidationError('An instance of LexicalUUID is required.')
+    
+    def render(self, value):
+        if isinstance(value, LexicalUUID):
+            return value.encode()
+        return value
 
 
 class FloatField(Field):

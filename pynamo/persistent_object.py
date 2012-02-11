@@ -539,7 +539,8 @@ class PersistentObject(object):
         return self.__str__()
     
     def to_dict(self):
-        return {n: getattr(self, n) for n in self._properties}
+        return {n: getattr(self.__class__, n).render(getattr(self, n)) 
+                    for n in self._properties}
     
     def verbose_string(self):
         """
